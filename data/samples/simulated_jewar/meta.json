@@ -1,0 +1,33 @@
+{
+  "title": "SIMULATED — Jewar with painted clearing, track and flood",
+  "pixel_m": 15.26,
+  "pixel_note": "from the run's bbox at 512 px; approximate",
+  "simulated": true,
+  "kind": "simulated",
+  "source_run": "20260904T131633",
+  "zone": [
+    10,
+    15,
+    55,
+    95
+  ],
+  "zone_note": "Example lease boundary: the painted clearing sits outside it.",
+  "short_title": "Mining-lease breach",
+  "place": "Jewar, Uttar Pradesh",
+  "dates": "real image + 3 painted changes",
+  "order": 1,
+  "featured": true,
+  "ps": [
+    "Land excavation",
+    "Vegetation loss",
+    "Flooding (natural)"
+  ],
+  "why": "One pair that shows the whole idea. A real satellite image with three changes painted in: a cleared pit outside the mining lease, a fresh track to it, and a flood beside the river. The tool has to tell the human-made from the natural.",
+  "look_for": [
+    "The cleared pit turns red: straight edges and a new track leading to it",
+    "It lies outside the lease boundary, so it is flagged and ranked #1",
+    "The flood beside the river turns blue: irregular edge, new water",
+    "Then open the evidence chain: Verify, then Tamper"
+  ],
+  "story": "Real 'before'. The 'after' is the same image with three painted changes: a rectangular cleared patch, a 3 px track joining it to the existing road, and an irregular flood beside the river (painted as dark open water; turbid floodwater in real true-colour imagery may not pass the RGB water test). Not a real event."
+}

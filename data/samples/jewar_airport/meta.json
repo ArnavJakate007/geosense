@@ -1,0 +1,53 @@
+{
+  "short_title": "Airport built on farmland",
+  "place": "Jewar, Uttar Pradesh, India",
+  "ps": [
+    "Infrastructure",
+    "Land excavation"
+  ],
+  "order": 2,
+  "featured": true,
+  "why": "Noida International Airport. In early 2018 this was farmland; seven years later there is a 4 km runway, aprons and a terminal. The airport site is drawn as the permitted zone, so building inside it is expected and changes outside it are flagged.",
+  "title": "Airport built on farmland — Jewar, Uttar Pradesh, India (2018-01-30 → 2025-01-28)",
+  "kind": "real",
+  "simulated": false,
+  "bands": true,
+  "dates": "2018-01-30 → 2025-01-28",
+  "pixel_m": 15.66,
+  "pixel_note": "Sentinel-2 L2A, resampled to 512 px over the box",
+  "bbox": [
+    77.57124,
+    28.14383,
+    77.65276,
+    28.21617
+  ],
+  "scenes": {
+    "before": {
+      "id": "S2B_43RGM_20180130_0_L2A",
+      "date": "2018-01-30",
+      "scene_cloud": 2.4,
+      "aoi_cloud_shadow_nodata": 0.0,
+      "stac": "https://earth-search.aws.element84.com/v1/collections/sentinel-2-l2a/items/S2B_43RGM_20180130_0_L2A"
+    },
+    "after": {
+      "id": "S2C_43RGM_20250128_0_L2A",
+      "date": "2025-01-28",
+      "scene_cloud": 0.0,
+      "aoi_cloud_shadow_nodata": 0.0,
+      "stac": "https://earth-search.aws.element84.com/v1/collections/sentinel-2-l2a/items/S2C_43RGM_20250128_0_L2A"
+    }
+  },
+  "story": "Noida International Airport. In early 2018 this was farmland; seven years later there is a 4 km runway, aprons and a terminal. The airport site is drawn as the permitted zone, so building inside it is expected and changes outside it are flagged.",
+  "zone": [
+    3,
+    38,
+    86,
+    80
+  ],
+  "zone_note": "Illustrative boundary around the airport site, not the notified one.",
+  "look_for": [
+    "The airport itself is two large regions read as human-made: a complex outline, but built of straight lines at right angles",
+    "A new road outside the airport boundary (top) is traced as an access track and flagged",
+    "Small patches stay amber: too small for a shape verdict, and each card says what would settle it"
+  ]
+}

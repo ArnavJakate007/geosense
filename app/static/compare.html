@@ -1,0 +1,1759 @@
+<!doctype html>
+<!--
+  GeoSense — Change Attribution (Track 05 build)
+  ==============================================
+  Served at GET /compare. Opened as a file, or when the API is unreachable, it
+  switches to SAMPLE MODE: imagery is drawn in the browser, the result is
+  scripted from that drawing, and the evidence chain is still real SHA-256.
+
+  API CONTRACT — what this page sends and expects
+  -----------------------------------------------
+  GET  /api/compare/samples
+       -> { "samples": [ { "name", "title", "story", "pixel_m", "pixel_note", "simulated",
+                           "zone"?: [l,t,r,b], "zone_note"?, "thumbs": {"before","after"} } ] }
+
+  POST /api/compare            (JSON body)
+       { "sample"?: str,                         // a sample name, or both images below
+         "before_b64"?: str, "after_b64"?: str,  // base64 file bytes (PNG / JPG / TIFF)
+         "before_name"?: str, "after_name"?: str,
+         "pixel_m"?: number,                     // metres per pixel
+         "sensitivity"?: 0.5..2.0, "min_region_px"?: int,
+         "zone"?: [left, top, right, bottom] }   // permitted zone, percent of the image
+       -> {
+         "id": "20261025T122939-fe2fab", "created": ISO-8601,
+         "inputs":   { "before": {"name","sha256","size":[w,h],"bands":bool}, "after": {...},
+                       "source"?: {"title","simulated","pixel_note"} },
+         "settings": { "pixel_m","sensitivity","min_region_px","working_size":[w,h],
+                       "downscale","rules_sha256","zone": [l,t,r,b] | null },
+         "summary":  { "regions","changed_ha","human","human_ha","natural","natural_ha",
+                       "uncertain","uncertain_ha","ignored","ignored_ha","tracks",
+                       "outside_zone","outside_zone_ha" },
+         "regions":  [ { "id","type","cause","human_score","confidence","area_ha","area_px",
+                         "bbox":[x0,y0,x1,y1],"centroid":[x,y],"fd","rectangularity","solidity",
+                         "elongation","is_track","track_link","outside_zone","outside_zone_frac",
+                         "evidence": [ {"tag":"shape"|"bands"|"context","text","points"} ],
+                         "reasons": [str] } ],              // ranked, id 1 = most severe
+         "notes":    [str],
+         "chain":    { "head","verified","links": [ {"n","step","detail","ts","prev","hash"} ] },
+         "urls":     { "before","after","overlay","labels","report_html","report_md" } }
+       cause is one of: "likely human-made" | "likely natural" | "uncertain" | "ignored (cloud)"
+
+  GET  urls.labels  -> PNG at working size; region id per pixel = R + 256*G (0 = no change).
+
+  CHAIN HASHING (identical to app/provenance.py)
+       hash_n = SHA-256( utf8(prev_hash_hex) + canon({"step","detail","ts","prev"}) )
+       canon  = JSON with sorted keys, separators "," and ":", every character outside
+                0x20-0x7E escaped as \uXXXX  (Python json.dumps(sort_keys=True,
+                separators=(",", ":"))). Whole numbers are ints in every detail.
+       The first block's prev is 64 zeros.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GeoSense — Spot the change. Name the cause.</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --ink:#0b0b0b; --paper:#fff8e7; --card:#ffffff; --muted:#4a4a4a;
+  --lime:#c8ff3d; --pink:#ff8fd1; --sky:#8fd8ff; --sun:#ffd23f; --violet:#b9a4ff;
+  --human:#ff4d2e; --natural:#2f7bff; --uncertain:#ffc22e; --ignored:#bdbdbd;
+  --tag-shape:#ffb3e1; --tag-bands:#a9e2ff; --tag-context:#d8ff7a;
+  --bw:3px; --sh:6px 6px 0 var(--ink); --sh-sm:4px 4px 0 var(--ink); --sh-xs:2px 2px 0 var(--ink);
+  --font:"Archivo",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.5 var(--font);
+  background-image:radial-gradient(rgba(11,11,11,.13) 1px,transparent 1.2px);background-size:22px 22px}
+button,input,select{font:inherit;color:inherit}
+a{color:inherit}
+:focus-visible{outline:3px dashed var(--ink);outline-offset:3px}
+.wrap{max-width:1280px;margin:0 auto;padding:0 20px}
+.mono{font-family:var(--mono)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* ---------- primitives ---------- */
+.panel{background:var(--card);border:var(--bw) solid var(--ink);box-shadow:var(--sh)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:10px;border:var(--bw) solid var(--ink);
+  background:var(--card);box-shadow:var(--sh-sm);padding:12px 18px;font-weight:800;text-transform:uppercase;
+  letter-spacing:.02em;cursor:pointer;text-decoration:none;min-height:48px;transition:transform .08s,box-shadow .08s}
+.btn:hover{transform:translate(-1px,-1px);box-shadow:5px 5px 0 var(--ink)}
+.btn:active{transform:translate(3px,3px);box-shadow:var(--sh-xs)}
+.btn:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:var(--sh-sm)}
+.btn.lime{background:var(--lime)} .btn.pink{background:var(--pink)} .btn.ink{background:var(--ink);color:var(--lime)}
+.btn.sun{background:var(--sun)} .btn.big{font-size:20px;padding:16px 22px;min-height:62px;width:100%;box-shadow:var(--sh)}
+.btn svg{width:20px;height:20px;flex:none}
+.chip{display:inline-flex;align-items:center;gap:6px;border:2px solid var(--ink);background:var(--card);padding:2px 9px;
+  font:700 12px/1.6 var(--mono);text-transform:uppercase;letter-spacing:.03em;white-space:nowrap}
+.sticker{display:inline-block;background:var(--ink);color:var(--lime);font:700 13px/1 var(--mono);padding:8px 12px;
+  text-transform:uppercase;letter-spacing:.06em;transform:rotate(-1.5deg);box-shadow:4px 4px 0 var(--pink)}
+.label{display:block;font:700 12px/1 var(--mono);text-transform:uppercase;letter-spacing:.06em;margin:16px 0 7px}
+input[type=number],select{width:100%;min-height:46px;border:var(--bw) solid var(--ink);background:#fff;padding:9px 11px;
+  font-weight:600;border-radius:0;box-shadow:var(--sh-xs)}
+select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,var(--ink) 50%),linear-gradient(135deg,var(--ink) 50%,transparent 50%);
+  background-position:calc(100% - 20px) 50%,calc(100% - 14px) 50%;background-size:6px 6px;background-repeat:no-repeat;padding-right:36px}
+input[type=range]{width:100%;accent-color:var(--ink);height:28px}
+.unit{position:relative}.unit span{position:absolute;right:12px;top:50%;transform:translateY(-50%);font:700 12px var(--mono);color:var(--muted)}
+.unit input{padding-right:52px}
+
+/* ---------- top bar ---------- */
+.top{position:sticky;top:0;z-index:40;background:var(--paper);border-bottom:var(--bw) solid var(--ink)}
+.top .wrap{display:flex;align-items:center;gap:14px;min-height:68px}
+.logo{display:flex;align-items:center;gap:10px;font-weight:900;font-size:22px;letter-spacing:-.02em;text-decoration:none}
+.logo i{display:grid;place-items:center;width:38px;height:38px;background:var(--lime);border:var(--bw) solid var(--ink);box-shadow:var(--sh-xs)}
+.logo i svg{width:22px;height:22px}
+.top nav{display:flex;gap:6px;margin-left:auto;align-items:center;flex-wrap:wrap}
+.top nav a{font-weight:700;font-size:14px;text-decoration:none;padding:6px 10px;border:2px solid transparent}
+.top nav a:hover{border-color:var(--ink);background:var(--card)}
+.mode{font:700 12px/1 var(--mono);padding:8px 10px;border:2px solid var(--ink);text-transform:uppercase;display:inline-flex;gap:7px;align-items:center}
+.mode b{width:10px;height:10px;border:2px solid var(--ink);display:block}
+.mode.live{background:var(--lime)} .mode.live b{background:#18a33a}
+.mode.sample{background:var(--sun)} .mode.sample b{background:var(--human)}
+.mode.wait{background:#fff}
+
+/* ---------- hero ---------- */
+.hero{padding:38px 0 30px}
+.hero .wrap{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:34px;align-items:start}
+.hero h1{font-size:clamp(44px,6.4vw,90px);line-height:.92;font-weight:900;letter-spacing:-.035em;margin:22px 0 18px;text-transform:uppercase}
+.hero h1 mark{background:var(--lime);padding:0 .08em;box-shadow:6px 6px 0 var(--ink);border:var(--bw) solid var(--ink);display:inline-block;transform:rotate(-1deg)}
+.lead{font-size:19px;max-width:520px;margin:0 0 22px}
+.feats{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:22px}
+.feats .chip{font-size:12.5px;padding:6px 11px;box-shadow:var(--sh-xs)}
+.feats .chip:nth-child(1){background:var(--tag-shape)} .feats .chip:nth-child(2){background:var(--tag-context)} .feats .chip:nth-child(3){background:var(--tag-bands)}
+.ps{border:var(--bw) solid var(--ink);background:var(--card);padding:14px 16px;box-shadow:var(--sh-sm);font-size:14.5px}
+.ps b{font:700 11.5px var(--mono);text-transform:uppercase;letter-spacing:.06em;display:block;margin-bottom:4px}
+.stats{display:flex;gap:18px;margin-top:20px;flex-wrap:wrap}
+.stats div{font:700 13px var(--mono);text-transform:uppercase}.stats div strong{display:block;font:900 30px var(--font);letter-spacing:-.02em}
+
+.tool{position:relative}
+.tool-head{display:flex;align-items:center;justify-content:space-between;background:var(--ink);color:var(--lime);padding:12px 16px;
+  font:700 13px var(--mono);text-transform:uppercase;letter-spacing:.06em}
+.tool-head span{color:#fff}
+.tool-body{padding:4px 18px 20px}
+.step{border-bottom:2px dashed var(--ink);padding:14px 0 18px}
+.step:last-of-type{border-bottom:0}
+.step h2{display:flex;align-items:center;gap:10px;margin:4px 0 2px;font-size:18px;font-weight:900;text-transform:uppercase}
+.step h2 i{display:grid;place-items:center;width:30px;height:30px;background:var(--sun);border:var(--bw) solid var(--ink);font:800 14px var(--mono);font-style:normal}
+.story{font-size:14px;color:var(--muted);margin-top:8px;min-height:1.2em}
+.or{display:flex;align-items:center;gap:10px;font:700 12px var(--mono);text-transform:uppercase;margin:16px 0 10px;color:var(--muted)}
+.or::before,.or::after{content:"";flex:1;border-top:2px solid var(--ink)}
+.tabs{display:flex;border:var(--bw) solid var(--ink);margin:12px 0 14px;box-shadow:var(--sh-xs)}
+.tabs button{flex:1;border:0;background:#fff;padding:10px 12px;font:800 13px var(--mono);text-transform:uppercase;letter-spacing:.04em;cursor:pointer;min-height:46px}
+.tabs button + button{border-left:var(--bw) solid var(--ink)}
+.tabs button[aria-selected=true]{background:var(--ink);color:var(--lime)}
+.tabs button:disabled{color:#999;cursor:not-allowed}
+.scen-label{font:700 12px var(--mono);text-transform:uppercase;letter-spacing:.06em;margin:0 0 8px;color:var(--muted)}
+.scenarios{display:flex;flex-direction:column;gap:10px}
+.scen{position:relative;display:grid;grid-template-columns:132px 1fr;gap:12px;align-items:center;text-align:left;width:100%;
+  border:var(--bw) solid var(--ink);background:#fff;padding:8px;cursor:pointer;box-shadow:var(--sh-xs);transition:transform .08s,box-shadow .08s}
+.scen:hover{transform:translate(-1px,-1px);box-shadow:var(--sh-sm)}
+.scen[aria-checked=true]{background:var(--lime);box-shadow:var(--sh-sm)}
+.sthumb{position:relative;display:block;width:132px;aspect-ratio:4/3;border:2px solid var(--ink);overflow:hidden;background:#ddd}
+.sthumb img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.sthumb img.aft{clip-path:inset(0 0 0 50%)}
+.sthumb i{position:absolute;top:0;bottom:0;left:50%;width:2px;margin-left:-1px;background:#fff;box-shadow:0 0 0 1px var(--ink)}
+.sthumb em{position:absolute;bottom:3px;left:3px;font:700 8.5px/1 var(--mono);font-style:normal;background:var(--ink);color:#fff;padding:2px 3px}
+.sthumb em.r{left:auto;right:3px;background:#fff;color:var(--ink)}
+.sbody{display:flex;flex-direction:column;gap:4px;min-width:0}
+.stop{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.sorder{display:grid;place-items:center;width:24px;height:24px;border:2px solid var(--ink);background:var(--sun);font:800 12px var(--mono)}
+.kind{border:2px solid var(--ink);font:800 10.5px/1.5 var(--mono);text-transform:uppercase;padding:0 6px;letter-spacing:.04em}
+.kind.real{background:#fff} .kind.simulated{background:var(--sun)} .kind.drawn{background:var(--pink)} .kind.upload{background:var(--sky)}
+.start{font:800 10.5px/1.5 var(--mono);text-transform:uppercase;background:var(--ink);color:var(--lime);padding:0 6px}
+.sbody strong{font-size:17px;font-weight:900;line-height:1.15}
+.sbody small{font-size:12.5px;color:var(--muted);line-height:1.35}
+.scen[aria-checked=true] .sbody small{color:var(--ink)}
+.pstags{display:flex;flex-wrap:wrap;gap:4px}
+.pstags span{border:1.5px solid var(--ink);background:#fff;font:700 10px/1.5 var(--mono);text-transform:uppercase;padding:0 5px}
+.pstags span.limit{background:var(--human)}
+.scheck{position:absolute;top:-10px;right:-10px;width:28px;height:28px;display:none;place-items:center;background:var(--ink);color:var(--lime);
+  border:2px solid var(--ink);font:900 15px var(--mono)}
+.scen[aria-checked=true] .scheck{display:grid}
+.scenarios.compact .scen{grid-template-columns:84px 1fr;padding:6px}
+.scenarios.compact .sthumb{width:84px}
+.scenarios.compact .sbody strong{font-size:15px}
+.more{margin-top:12px;border:var(--bw) solid var(--ink);background:#fff}
+.more summary{cursor:pointer;padding:10px 12px;font:800 12.5px var(--mono);text-transform:uppercase;letter-spacing:.04em;list-style:none;display:flex;justify-content:space-between}
+.more summary::after{content:"+";font-size:16px}
+.more[open] summary::after{content:"−"}
+.more[open] summary{border-bottom:var(--bw) solid var(--ink)}
+.more .scenarios{padding:10px}
+.scen-info{margin-top:14px;border:var(--bw) solid var(--ink);background:#fffdf3;box-shadow:var(--sh-xs)}
+.scen-info:empty{display:none}
+.scen-info .why{padding:12px 14px;border-bottom:2px dashed var(--ink)}
+.scen-info .look{padding:12px 14px}
+.scen-info b{display:block;font:800 11.5px var(--mono);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}
+.scen-info p{margin:0;font-size:14.5px}
+.scen-info ol,.guide ol{margin:0;padding-left:0;list-style:none;counter-reset:look;display:flex;flex-direction:column;gap:6px}
+.scen-info li,.guide li{counter-increment:look;display:grid;grid-template-columns:24px 1fr;gap:8px;font-size:14px;line-height:1.4}
+.scen-info li::before,.guide li::before{content:counter(look);display:grid;place-items:center;width:22px;height:22px;border:2px solid var(--ink);background:var(--lime);font:800 11px var(--mono)}
+.guide{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);border:var(--bw) solid var(--ink);box-shadow:var(--sh);background:#fff;margin-bottom:22px}
+.guide:empty{display:none}
+.guide .gl{padding:14px 16px;border-right:var(--bw) solid var(--ink);background:var(--paper)}
+.guide .gl .stop{margin-bottom:6px}
+.guide .gl h3{margin:2px 0 6px;font-size:22px;font-weight:900;text-transform:uppercase;line-height:1.05}
+.guide .gl p{margin:0;font-size:14.5px}
+.guide .gr{padding:14px 16px}
+.guide .gr > b{display:block;font:800 12px var(--mono);text-transform:uppercase;letter-spacing:.06em;margin-bottom:8px}
+.drops{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.drop{position:relative;border:var(--bw) dashed var(--ink);background:#fff;min-height:132px;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;gap:6px;text-align:center;padding:10px;cursor:pointer;overflow:hidden}
+.drop:hover,.drop.over{background:var(--lime);border-style:solid}
+.drop input{position:absolute;inset:0;opacity:0;cursor:pointer}
+.drop b{font:800 13px var(--mono);text-transform:uppercase;letter-spacing:.06em}
+.drop small{font-size:12.5px;color:var(--muted);word-break:break-all;max-width:100%}
+.drop img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;pointer-events:none}
+.drop.has b{position:relative;z-index:1;background:var(--ink);color:var(--lime);padding:3px 7px}
+.drop.has small{position:relative;z-index:1;background:#fff;border:2px solid var(--ink);padding:1px 6px;color:var(--ink)}
+.drop.off{opacity:.45;pointer-events:none}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.sensrow{display:flex;justify-content:space-between;align-items:baseline}
+.sensrow output{font:800 14px var(--mono);background:var(--sun);border:2px solid var(--ink);padding:0 7px}
+.switch{display:flex;align-items:center;justify-content:space-between;gap:10px;cursor:pointer;margin-top:8px;font-weight:700}
+.switch input{position:absolute;opacity:0;width:1px;height:1px}
+.switch .knob{width:62px;height:32px;border:var(--bw) solid var(--ink);background:#fff;position:relative;flex:none;box-shadow:var(--sh-xs)}
+.switch .knob::after{content:"";position:absolute;top:3px;left:3px;width:20px;height:20px;background:var(--ink);transition:left .12s}
+.switch input:checked + .knob{background:var(--lime)} .switch input:checked + .knob::after{left:33px}
+.switch input:focus-visible + .knob{outline:3px dashed var(--ink);outline-offset:3px}
+.zonebox{margin-top:12px;display:none}
+.zonebox.on{display:block}
+.zpick{position:relative;border:var(--bw) solid var(--ink);background:#e9e4d6;aspect-ratio:1;cursor:crosshair;touch-action:none;overflow:hidden;user-select:none}
+.zpick img{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;pointer-events:none}
+.zpick .empty{position:absolute;inset:0;display:grid;place-items:center;font:700 12px var(--mono);text-transform:uppercase;color:var(--muted);padding:12px;text-align:center}
+.zrect{position:absolute;border:3px dashed var(--ink);background:rgba(255,210,63,.18);box-shadow:inset 0 0 0 2px var(--sun);pointer-events:none}
+.zrect::after{content:"PERMITTED ZONE";position:absolute;left:-3px;top:-24px;background:var(--ink);color:var(--sun);font:700 10px var(--mono);padding:3px 6px;white-space:nowrap}
+.zinputs{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px}
+.zinputs label{font:700 11px var(--mono);text-transform:uppercase}
+.zinputs input{min-height:40px;padding:6px 8px}
+.znote{font-size:13px;color:var(--muted);margin-top:8px}
+.status{font:600 13px var(--mono);margin-top:12px;min-height:1.4em}
+.err{margin-top:12px;border:var(--bw) solid var(--ink);background:var(--human);color:var(--ink);font-weight:700;padding:10px 12px;box-shadow:var(--sh-xs)}
+.banner{border:var(--bw) solid var(--ink);padding:12px 16px;font-weight:700;box-shadow:var(--sh-sm);margin:0 0 18px}
+.banner.sample{background:var(--sun)}
+.stripes{background:repeating-linear-gradient(-45deg,var(--sun) 0 18px,var(--ink) 18px 36px);border:var(--bw) solid var(--ink);padding:6px;margin-bottom:18px}
+.stripes span{display:block;background:var(--sun);border:2px solid var(--ink);text-align:center;font:800 14px var(--mono);text-transform:uppercase;padding:8px;letter-spacing:.04em}
+
+/* ---------- sections ---------- */
+section.block{padding:34px 0}
+.shead{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:20px}
+.shead h2{font-size:clamp(30px,4vw,48px);line-height:1;margin:0;font-weight:900;letter-spacing:-.03em;text-transform:uppercase}
+.shead h2 small{display:block;font:700 13px var(--mono);letter-spacing:.08em;margin-bottom:8px;color:var(--muted)}
+.meta{display:flex;flex-wrap:wrap;gap:8px}
+
+.verdicts{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:16px;margin-bottom:26px}
+.v{border:var(--bw) solid var(--ink);box-shadow:var(--sh);padding:14px 16px 16px;min-height:150px;display:flex;flex-direction:column}
+.v b{font:700 12px var(--mono);text-transform:uppercase;letter-spacing:.06em}
+.v strong{font-size:58px;line-height:1;font-weight:900;letter-spacing:-.04em;margin:10px 0 auto}
+.v span{font:700 13px var(--mono);margin-top:10px}
+.v.human{background:var(--human)} .v.natural{background:var(--natural)} .v.uncertain{background:var(--uncertain)}
+.v.ignored{background:var(--ignored)} .v.total{background:var(--card)} .v.zone{background:var(--ink);color:var(--sun)}
+
+.viewer{padding:0;overflow:hidden}
+.vbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;border-bottom:var(--bw) solid var(--ink);background:var(--lime)}
+.vbar .sp{flex:1}
+.seg{display:inline-flex;border:var(--bw) solid var(--ink);background:#fff}
+.seg button{border:0;background:none;padding:7px 12px;font:700 12px var(--mono);text-transform:uppercase;cursor:pointer;min-height:38px}
+.seg button + button{border-left:var(--bw) solid var(--ink)}
+.seg button[aria-pressed=true]{background:var(--ink);color:var(--lime)}
+.legend{display:flex;flex-wrap:wrap;gap:6px}
+.legend .chip{font-size:11px}
+.legend s{width:12px;height:12px;border:2px solid var(--ink);display:block}
+.stagewrap{background:#111;padding:14px;display:flex;justify-content:center}
+.stage{position:relative;width:100%;max-width:calc(74vh * var(--arn,1.333));aspect-ratio:var(--ar,4/3);border:var(--bw) solid var(--ink);
+  background:#000;overflow:hidden;cursor:pointer;touch-action:none;user-select:none;--pos:50%}
+.stage .layer{position:absolute;inset:0;width:100%;height:100%;object-fit:fill;image-rendering:pixelated;-webkit-user-drag:none}
+.stage .right{position:absolute;inset:0;clip-path:inset(0 0 0 var(--pos))}
+.stage .handle{position:absolute;top:0;bottom:0;left:var(--pos);width:4px;margin-left:-2px;background:var(--ink);cursor:ew-resize;z-index:3}
+.stage .handle::before{content:"";position:absolute;inset:0 -2px;background:var(--lime);transform:scaleX(.5)}
+.stage .handle span{position:absolute;top:50%;left:50%;width:42px;height:42px;transform:translate(-50%,-50%);background:var(--lime);
+  border:var(--bw) solid var(--ink);box-shadow:var(--sh-xs);display:grid;place-items:center;font:900 16px var(--mono)}
+.stage .handle span::after{content:"◀▶";font-size:11px;letter-spacing:-1px}
+.stage .tl,.stage .tr{position:absolute;top:10px;z-index:2;font:800 12px var(--mono);text-transform:uppercase;background:var(--ink);color:#fff;padding:5px 8px;pointer-events:none}
+.stage .tl{left:10px} .stage .tr{right:10px;background:var(--lime);color:var(--ink);border:2px solid var(--ink)}
+.stage .zone{position:absolute;border:3px dashed var(--ink);box-shadow:inset 0 0 0 3px var(--sun),0 0 0 3px var(--sun);pointer-events:none;z-index:2}
+.stage .tip{position:absolute;z-index:4;pointer-events:none;background:#fff;border:2px solid var(--ink);box-shadow:var(--sh-xs);
+  font:700 12px var(--mono);padding:4px 8px;white-space:nowrap;transform:translate(12px,12px)}
+.vfoot{display:flex;flex-wrap:wrap;gap:8px;padding:10px 12px;border-top:var(--bw) solid var(--ink);font-size:13.5px;align-items:center;background:#fff}
+
+.filters{display:flex;flex-wrap:wrap;gap:8px;margin:28px 0 14px}
+.filters button{border:var(--bw) solid var(--ink);background:#fff;padding:7px 12px;font:700 12px var(--mono);text-transform:uppercase;cursor:pointer;box-shadow:var(--sh-xs);min-height:40px}
+.filters button[aria-pressed=true]{background:var(--ink);color:var(--lime)}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:20px}
+.rcard{position:relative;background:#fff;border:var(--bw) solid var(--ink);box-shadow:var(--sh);padding:0;cursor:pointer;scroll-margin:110px;transition:transform .1s}
+.rcard:hover{transform:translate(-2px,-2px)}
+.rcard.sel{outline:4px solid var(--ink);outline-offset:4px;background:#fffdf2}
+.rhead{display:flex;align-items:center;gap:10px;padding:12px 14px;border-bottom:var(--bw) solid var(--ink)}
+.rnum{display:grid;place-items:center;min-width:46px;height:46px;border:var(--bw) solid var(--ink);font:900 20px var(--font);box-shadow:var(--sh-xs)}
+.rtitle{flex:1;min-width:0}
+.rtitle h3{margin:0;font-size:18px;font-weight:900;text-transform:capitalize;line-height:1.15}
+.rtitle small{font:600 12px var(--mono);color:var(--muted)}
+.cause{display:inline-block;border:2px solid var(--ink);padding:2px 8px;font:800 11px var(--mono);text-transform:uppercase;letter-spacing:.03em;white-space:nowrap}
+.k-human{background:var(--human)} .k-natural{background:var(--natural)} .k-uncertain{background:var(--uncertain)} .k-ignored{background:var(--ignored)}
+.rbody{padding:12px 14px 14px}
+.conf{display:flex;align-items:center;gap:10px;font:700 12px var(--mono);text-transform:uppercase}
+.meter{flex:1;height:18px;border:var(--bw) solid var(--ink);background:repeating-linear-gradient(90deg,#fff 0 10px,#f1ece0 10px 11px)}
+.meter i{display:block;height:100%;border-right:var(--bw) solid var(--ink)}
+.sig{display:flex;flex-direction:column;gap:4px;border:2px solid var(--ink);background:#fbf8ef;padding:10px 10px 8px}
+.sigrow{display:grid;grid-template-columns:104px 1fr auto;gap:10px;align-items:center}
+.sigrow .lbl{font:800 11px var(--mono);text-transform:uppercase;letter-spacing:.03em}
+.sigrow .val{font:800 13px var(--mono);white-space:nowrap}
+.sigrow .val small{font-size:10px;color:var(--muted)}
+.zbar{position:relative;height:18px;border:2px solid var(--ink);background:#fff;overflow:hidden}
+.zbar .noise{position:absolute;left:0;top:0;bottom:0;border-right:2px solid var(--ink);
+  background:repeating-linear-gradient(-45deg,#e4dfd2 0 4px,#fff 4px 8px);font:700 9px/14px var(--mono);text-transform:uppercase;color:var(--muted);text-align:center}
+.zbar i{position:absolute;top:0;bottom:0;background:var(--ink)}
+.zbar em{position:absolute;right:2px;top:0;font:900 11px/14px var(--mono);font-style:normal;color:var(--lime)}
+.zhelp{font:600 10.5px/1.3 var(--mono);color:var(--muted);margin:0 0 6px 114px}
+.lean{position:relative;height:16px;border:2px solid var(--ink);display:grid;grid-template-columns:40fr 20fr 40fr}
+.lean .bn{background:var(--natural)} .lean .bu{background:var(--uncertain);border-left:2px solid var(--ink);border-right:2px solid var(--ink)} .lean .bh{background:var(--human)}
+.lean b{position:absolute;top:-6px;bottom:-6px;width:8px;margin-left:-4px;background:#fff;border:2px solid var(--ink);box-shadow:var(--sh-xs)}
+.leanaxis{display:grid;grid-template-columns:40fr 20fr 40fr;margin-left:114px;margin-right:52px;font:700 9.5px var(--mono);text-transform:uppercase;color:var(--muted)}
+.leanaxis span:nth-child(2){text-align:center} .leanaxis span:nth-child(3){text-align:right}
+.leantext{align-self:flex-start;margin:6px 0 0 114px;border:2px solid var(--ink);padding:1px 8px;font:800 12px var(--mono);text-transform:uppercase;letter-spacing:.02em}
+.sigrow .leantext{margin:0;grid-column:2 / 4}
+.settle{margin-top:10px;border:2px dashed var(--ink);background:#fff6d6;padding:8px 10px;font-size:13.5px;line-height:1.4}
+.settle b{display:block;font:800 11px var(--mono);text-transform:uppercase;letter-spacing:.05em;margin-bottom:2px}
+.facts{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0}
+.facts .chip{font-size:11.5px;background:#f6f2e6}
+.ev{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:7px}
+.ev li{display:grid;grid-template-columns:auto 1fr auto;gap:9px;align-items:start;font-size:14px;line-height:1.4}
+.tag{border:2px solid var(--ink);font:800 10.5px/1.5 var(--mono);text-transform:uppercase;padding:0 6px;letter-spacing:.04em;margin-top:1px}
+.t-shape{background:var(--tag-shape)} .t-bands{background:var(--tag-bands)} .t-context{background:var(--tag-context)}
+.pts{font:800 12px var(--mono);border:2px solid var(--ink);padding:0 5px;background:#fff;white-space:nowrap}
+.pts.up{background:#ffd4cc} .pts.down{background:#cfe0ff}
+.flag{margin:12px -14px -14px;background:repeating-linear-gradient(-45deg,var(--sun) 0 12px,var(--ink) 12px 24px);border-top:var(--bw) solid var(--ink);padding:6px}
+.flag span{display:block;background:var(--ink);color:var(--sun);font:800 12px var(--mono);text-transform:uppercase;padding:6px 8px;letter-spacing:.04em}
+
+/* ---------- chain ---------- */
+.chainbar{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:18px}
+.cstatus{flex:1;min-width:240px;border:var(--bw) solid var(--ink);padding:12px 14px;font:700 14px var(--mono);box-shadow:var(--sh-xs);background:#fff}
+.cstatus.ok{background:var(--lime)} .cstatus.bad{background:var(--human)}
+.chainrow{display:flex;align-items:stretch;overflow-x:auto;padding:6px 6px 22px;scroll-snap-type:x proximity;gap:0}
+.cblk{flex:1 0 196px;min-width:196px;scroll-snap-align:start;background:#fff;border:var(--bw) solid var(--ink);box-shadow:var(--sh);display:flex;flex-direction:column;transition:background .2s,transform .2s}
+.cblk .bh{display:flex;justify-content:space-between;align-items:center;background:var(--ink);color:var(--lime);padding:8px 10px;font:700 12px var(--mono);text-transform:uppercase}
+.cblk .bb{padding:10px;font-size:13.5px;flex:1;display:flex;flex-direction:column;gap:8px}
+.cblk .bb .what{font-weight:700;min-height:2.6em}
+.cblk .kv{font:600 11px/1.35 var(--mono);word-break:break-all}
+.cblk .kv b{display:block;font-size:10px;letter-spacing:.06em;color:var(--muted)}
+.cblk .stamp{margin:auto 10px 10px;border:var(--bw) solid var(--ink);text-align:center;font:800 12px var(--mono);text-transform:uppercase;padding:6px;background:#fff}
+.cblk.valid .stamp{background:var(--lime)} .cblk.mismatch,.cblk.broken-link,.cblk.after-break{background:#ffe1db}
+.cblk.mismatch .stamp,.cblk.broken-link .stamp,.cblk.after-break .stamp{background:var(--human)}
+.cblk.checking{transform:translateY(-4px)} .cblk.checking .stamp{background:var(--sun)}
+.cblk details{font:600 11px var(--mono)} .cblk details summary{cursor:pointer;font-weight:800}
+.cblk pre{white-space:pre-wrap;word-break:break-all;max-height:180px;overflow:auto;background:#f6f2e6;border:2px solid var(--ink);padding:6px;margin:6px 0 0}
+.cblk .tampered{background:var(--sun);border:2px solid var(--ink);padding:3px 5px;font:700 11px var(--mono)}
+.cblk .tampered s{color:#8a1a00}
+.clink{flex:0 0 40px;display:flex;align-items:center;justify-content:center;position:relative}
+.clink::before{content:"";position:absolute;left:0;right:0;top:50%;border-top:5px solid var(--ink)}
+.clink svg{position:relative;width:30px;height:30px;background:var(--paper);border:var(--bw) solid var(--ink);padding:3px}
+.clink.broken::before{border-top:5px dashed var(--human)}
+.clink.broken svg{background:var(--human)}
+.explain{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-top:8px}
+.explain div{border:var(--bw) solid var(--ink);background:#fff;padding:12px 14px;font-size:14.5px;box-shadow:var(--sh-xs)}
+.explain b{font:800 12px var(--mono);text-transform:uppercase;display:block;margin-bottom:4px}
+.formula{font:700 13.5px var(--mono);background:var(--ink);color:var(--lime);padding:12px 14px;border:var(--bw) solid var(--ink);box-shadow:4px 4px 0 var(--pink);margin:0 0 18px;overflow-x:auto;white-space:nowrap}
+
+.report{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:20px}
+.report .panel{padding:18px}
+.report .panel h3{margin:0 0 10px;font-size:20px;font-weight:900;text-transform:uppercase}
+.kvs{display:flex;flex-direction:column;gap:8px}
+.kvs div{font:600 12px var(--mono);word-break:break-all;border-bottom:2px dashed var(--ink);padding-bottom:6px}
+.kvs b{display:block;font-size:10.5px;color:var(--muted);letter-spacing:.06em;text-transform:uppercase}
+.btncol{display:flex;flex-direction:column;gap:12px}
+
+.how{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:18px}
+.how .panel{padding:16px}
+.how .panel i{display:grid;place-items:center;width:44px;height:44px;border:var(--bw) solid var(--ink);font:900 20px var(--mono);font-style:normal;margin-bottom:10px;box-shadow:var(--sh-xs)}
+.how h3{margin:0 0 6px;font-size:19px;font-weight:900;text-transform:uppercase}
+.how p{margin:0;font-size:14.5px}
+.limits{margin-top:22px;border:var(--bw) solid var(--ink);background:#fff;padding:14px 18px;box-shadow:var(--sh-sm)}
+.limits h3{margin:0 0 6px;font-size:16px;font-weight:900;text-transform:uppercase}
+.limits ul{margin:0;padding-left:20px;font-size:14.5px}
+footer{border-top:var(--bw) solid var(--ink);background:var(--ink);color:#fff;margin-top:30px}
+footer .wrap{display:flex;flex-wrap:wrap;gap:12px;justify-content:space-between;padding:20px;font:600 13px var(--mono)}
+footer b{color:var(--lime)}
+.hidden{display:none !important}
+
+@media (max-width:980px){
+  .hero .wrap,.report,.guide{grid-template-columns:1fr}
+  .guide .gl{border-right:0;border-bottom:var(--bw) solid var(--ink)}
+  .top nav a.hide-s{display:none}
+}
+@media (max-width:560px){
+  .wrap{padding:0 14px}
+  .hide-xs{display:none}
+  .top .wrap{gap:10px}
+  .logo{font-size:19px}
+  .drops,.grid2{grid-template-columns:1fr}
+  .scen{grid-template-columns:96px 1fr} .sthumb{width:96px}
+  .zinputs{grid-template-columns:repeat(2,1fr)}
+  .cards{grid-template-columns:1fr}
+  .v strong{font-size:46px}
+}
+@media (prefers-reduced-motion:reduce){
+  *{transition:none !important;animation:none !important;scroll-behavior:auto !important}
+}
+</style>
+</head>
+<body>
+
+<header class="top">
+  <div class="wrap">
+    <a class="logo" href="#top" aria-label="GeoSense, back to top">
+      <i aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="#0b0b0b" stroke-width="2.4" stroke-linecap="square"><rect x="9" y="9" width="6" height="6"/><path d="M3 6h5v4H3zM16 14h5v4h-5zM8 8 6 6M16 16l2 2M14 4a6 6 0 0 1 6 6"/></svg></i>
+      GEOSENSE
+    </a>
+    <span class="mode wait" id="mode" role="status"><b></b><span>connecting…</span></span>
+    <nav aria-label="Page sections">
+      <a href="#results" class="hide-s">Results</a>
+      <a href="#chain" class="hide-s">Evidence chain</a>
+      <a href="#how" class="hide-s">How it works</a>
+      <a href="/" id="consoleLink"><span class="hide-xs">Analyst </span>console →</a>
+    </nav>
+  </div>
+</header>
+
+<main id="top">
+<!-- ================= HERO: the tool ================= -->
+<section class="hero">
+  <div class="wrap">
+    <div>
+      <span class="sticker">Track 05 · SpaceTech &amp; Satellite Intelligence</span>
+      <h1>Spot the change.<br>Name the <mark>cause.</mark></h1>
+      <p class="lead">Upload a before and an after satellite image. GeoSense outlines every change, says whether it is
+        <b>likely human-made or natural</b> — with the evidence — and seals the result in a tamper-evident SHA-256 chain.</p>
+      <div class="feats"><span class="chip">Shape forensics</span><span class="chip">Track &amp; zone context</span><span class="chip">Hash-chained evidence</span></div>
+      <div class="ps"><b>Problem statement</b>Identify unusual changes on Earth's surface — forest destruction, excavation, flooding,
+        infrastructure damage — and distinguish natural events from potential human-made damage, with an automated report.</div>
+      <div class="stats" aria-label="Key facts">
+        <div><strong>&lt;1 s</strong>per image pair</div>
+        <div><strong>0</strong>trained models</div>
+        <div><strong>5</strong>chained evidence blocks</div>
+      </div>
+    </div>
+
+    <form class="panel tool" id="tool" onsubmit="return false" aria-labelledby="toolTitle">
+      <div class="tool-head"><span id="toolTitle">Analyse a pair</span>before → after → cause</div>
+      <div class="tool-body">
+        <div class="step">
+          <h2><i>1</i>Choose a scenario</h2>
+          <div class="tabs" role="tablist" aria-label="Where the images come from">
+            <button type="button" role="tab" id="tabDemo" aria-selected="true" aria-controls="paneDemo">Demo scenarios</button>
+            <button type="button" role="tab" id="tabUp" aria-selected="false" aria-controls="paneUp" tabindex="-1">Upload your own</button>
+          </div>
+          <div id="paneDemo" role="tabpanel" aria-labelledby="tabDemo">
+            <div class="scen-label">Recommended demo order</div>
+            <div class="scenarios" id="featured" role="radiogroup" aria-label="Recommended scenarios"></div>
+            <details class="more" id="moreWrap" hidden>
+              <summary>More real pairs <span id="moreCount"></span></summary>
+              <div class="scenarios compact" id="more" role="radiogroup" aria-label="More real pairs"></div>
+            </details>
+            <div class="scen-info" id="scenInfo" aria-live="polite"></div>
+          </div>
+          <div id="paneUp" role="tabpanel" aria-labelledby="tabUp" hidden>
+            <div class="drops">
+              <div class="drop" id="dropBefore"><b>Before</b><small id="fnBefore">PNG · JPG · TIFF</small>
+                <input type="file" id="fileBefore" accept=".png,.jpg,.jpeg,.tif,.tiff" aria-label="Upload before image"></div>
+              <div class="drop" id="dropAfter"><b>After</b><small id="fnAfter">PNG · JPG · TIFF</small>
+                <input type="file" id="fileAfter" accept=".png,.jpg,.jpeg,.tif,.tiff" aria-label="Upload after image"></div>
+            </div>
+            <div class="story" id="uploadNote">Two images of the same place, ideally the same season. A 5-band GeoTIFF (red, green, blue, NIR, SWIR16) also switches on the physics checks. Set the pixel size below.</div>
+          </div>
+        </div>
+
+        <div class="step">
+          <h2><i>2</i>Settings</h2>
+          <div class="grid2">
+            <div><label class="label" for="pixel">Pixel size</label>
+              <div class="unit"><input type="number" id="pixel" value="10" min="0.1" max="1000" step="0.01"><span>m/px</span></div></div>
+            <div><label class="label" for="minpx">Min. region</label>
+              <div class="unit"><input type="number" id="minpx" value="80" min="10" max="5000" step="10"><span>px</span></div></div>
+          </div>
+          <div class="sensrow"><label class="label" for="sens">Sensitivity</label><output id="sensOut" for="sens">1.0×</output></div>
+          <input type="range" id="sens" min="0.5" max="2" step="0.1" value="1" aria-describedby="sensHelp">
+          <div class="story" id="sensHelp">Higher finds fainter change, and more false alarms.</div>
+        </div>
+
+        <div class="step">
+          <h2><i>3</i>Permitted zone <span class="chip" style="margin-left:auto">optional</span></h2>
+          <label class="switch" for="zoneOn">Flag changes outside a lease or permitted boundary
+            <input type="checkbox" id="zoneOn"><span class="knob" aria-hidden="true"></span></label>
+          <div class="zonebox" id="zoneBox">
+            <div class="zpick" id="zpick" aria-label="Drag to draw the permitted zone">
+              <img id="zimg" alt="" hidden><div class="empty" id="zempty">Pick a sample or upload a before image, then drag here to draw the zone</div>
+              <div class="zrect" id="zrect"></div>
+            </div>
+            <div class="zinputs">
+              <div><label for="zl">Left %</label><input type="number" id="zl" min="0" max="100" value="10"></div>
+              <div><label for="zt">Top %</label><input type="number" id="zt" min="0" max="100" value="10"></div>
+              <div><label for="zr">Right %</label><input type="number" id="zr" min="0" max="100" value="60"></div>
+              <div><label for="zb">Bottom %</label><input type="number" id="zb" min="0" max="100" value="90"></div>
+            </div>
+            <div class="znote" id="znote">Drag on the image to draw the boundary, or type the edges as percentages.</div>
+          </div>
+        </div>
+
+        <button class="btn lime big" id="run" type="submit">Compare images
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true"><path d="M4 12h15M13 6l6 6-6 6"/></svg></button>
+        <div class="status mono" id="status" role="status" aria-live="polite"></div>
+        <div id="err" role="alert"></div>
+      </div>
+    </form>
+  </div>
+</section>
+
+<!-- ================= RESULTS ================= -->
+<section class="block hidden" id="results" aria-labelledby="resTitle">
+  <div class="wrap">
+    <div id="sampleBanner" class="banner sample hidden"></div>
+    <div id="simBanner" class="stripes hidden"><span>Simulated pair — changes were painted into a real image. Not a real event.</span></div>
+    <div class="shead">
+      <h2 id="resTitle"><small>02 — Verdict</small>What changed</h2>
+      <div class="meta" id="resMeta"></div>
+    </div>
+    <div class="guide" id="guide"></div>
+    <div class="verdicts" id="verdicts"></div>
+
+    <div class="panel viewer">
+      <div class="vbar">
+        <div class="seg" role="group" aria-label="Right side of the slider shows">
+          <button id="segLab" aria-pressed="true">Labelled</button><button id="segAft" aria-pressed="false">After only</button>
+        </div>
+        <div class="seg" role="group" aria-label="Permitted zone outline"><button id="segZone" aria-pressed="true">Zone outline</button></div>
+        <span class="sp"></span>
+        <div class="legend" aria-label="Colour key">
+          <span class="chip"><s style="background:var(--human)"></s>Human-made</span>
+          <span class="chip"><s style="background:var(--natural)"></s>Natural</span>
+          <span class="chip"><s style="background:var(--uncertain)"></s>Uncertain</span>
+          <span class="chip"><s style="background:var(--ignored)"></s>Cloud, ignored</span>
+        </div>
+      </div>
+      <div class="stagewrap">
+        <div class="stage" id="stage" role="group" aria-label="Before and after comparison. Click a coloured region to open its card.">
+          <img class="layer" id="vBefore" alt="Before image">
+          <div class="right" id="vRight">
+            <img class="layer" id="vAfter" alt="After image">
+            <canvas class="layer" id="vOverlay" role="img" aria-label="Changed regions coloured by likely cause"></canvas>
+          </div>
+          <div class="zone hidden" id="vZone"></div>
+          <div class="handle" id="vHandle" role="slider" tabindex="0" aria-label="Before and after divider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"><span></span></div>
+          <span class="tl">Before</span><span class="tr" id="vTag">After · labelled</span>
+          <div class="tip hidden" id="vTip"></div>
+        </div>
+      </div>
+      <div class="vfoot"><b>Drag</b> the divider to compare · <b>click</b> a coloured region to open its card · arrow keys move the divider.</div>
+    </div>
+
+    <div class="filters" role="group" aria-label="Filter region cards" id="filters">
+      <button data-f="all" aria-pressed="true">All</button>
+      <button data-f="likely human-made" aria-pressed="false">Human-made</button>
+      <button data-f="likely natural" aria-pressed="false">Natural</button>
+      <button data-f="uncertain" aria-pressed="false">Uncertain</button>
+      <button data-f="ignored (cloud)" aria-pressed="false">Cloud</button>
+    </div>
+    <div class="cards" id="cards"></div>
+    <div class="limits hidden" id="notes"></div>
+  </div>
+</section>
+
+<!-- ================= EVIDENCE CHAIN ================= -->
+<section class="block hidden" id="chain" aria-labelledby="chainTitle">
+  <div class="wrap">
+    <div class="shead">
+      <h2 id="chainTitle"><small>03 — Proof</small>Evidence chain</h2>
+      <div class="meta"><span class="chip">SHA-256</span><span class="chip">same hashing as provenance.py</span></div>
+    </div>
+    <div class="formula">hash<sub>n</sub> = SHA-256( hash<sub>n−1</sub> + canonical JSON of block n )</div>
+    <div class="chainbar">
+      <button class="btn ink" id="verify"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true"><path d="m4 12 5 5L20 6"/></svg>Verify chain</button>
+      <button class="btn pink" id="tamper"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true"><path d="M4 20 20 4M14 4h6v6"/></svg>Tamper with one value</button>
+      <button class="btn" id="reset">Reset</button>
+      <div class="cstatus" id="cstatus" role="status" aria-live="polite">Press Verify to recompute every hash in your browser.</div>
+    </div>
+    <div class="chainrow" id="chainrow" aria-label="Evidence blocks"></div>
+    <div class="explain">
+      <div><b>Each block</b>One step of this analysis: inputs and their file hashes, preprocessing, detection, every region's label, the summary.</div>
+      <div><b>Linked</b>Every block stores the previous block's hash, so editing one value changes its hash and breaks every block after it.</div>
+      <div><b>Checked here</b>Verify re-runs SHA-256 in your browser. Nothing is trusted from the server except the data itself.</div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= REPORT ================= -->
+<section class="block hidden" id="reportSec" aria-labelledby="repTitle">
+  <div class="wrap">
+    <div class="shead"><h2 id="repTitle"><small>04 — Hand-over</small>Evidence report</h2></div>
+    <div class="report">
+      <div class="panel">
+        <h3>Download</h3>
+        <div class="btncol">
+          <button class="btn lime" id="repHtml">Open printable report (save as PDF)</button>
+          <button class="btn" id="repMd">Download Markdown · self-fingerprinted</button>
+        </div>
+        <p class="story">The Markdown's last line is the SHA-256 of everything above it. Edit one character and the fingerprint no longer matches.</p>
+      </div>
+      <div class="panel"><h3>Fingerprints</h3><div class="kvs" id="fprints"></div></div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= HOW ================= -->
+<section class="block" id="how" aria-labelledby="howTitle">
+  <div class="wrap">
+    <div class="shead"><h2 id="howTitle"><small>How it works</small>Four honest steps</h2></div>
+    <div class="how">
+      <div class="panel"><i style="background:var(--sky)">1</i><h3>Find change</h3><p>Brightness is matched on the pixels that changed least, then any pixel whose colour difference beats the scene's own noise (median + k·MAD) is marked.</p></div>
+      <div class="panel"><i style="background:var(--tag-shape)">2</i><h3>Read shape</h3><p>Machines cut straight, simple edges; nature spreads irregularly. Fractal dimension, rectangularity and solidity score each patch.</p></div>
+      <div class="panel"><i style="background:var(--tag-context)">3</i><h3>Read context</h3><p>A new thin track leading to a clearing, water that was already there, a lease boundary it crosses — each adds or subtracts points.</p></div>
+      <div class="panel"><i style="background:var(--sun)">4</i><h3>Seal it</h3><p>Every step goes into a SHA-256 chain and a fingerprinted report, so nobody can quietly edit the result later.</p></div>
+    </div>
+    <div class="limits">
+      <h3>Limits we state up front</h3>
+      <ul>
+        <li>Labels are "likely" and meant for triage — deciding where to look first.</li>
+        <li>On RGB-only images, water is a colour proxy that misses turbid or weed-covered water; a 5-band GeoTIFF adds NDVI / MNDWI physics.</li>
+        <li>Images are not co-registered, and seasonal crop changes show up as change.</li>
+        <li>Hashes prove nothing was altered after analysis. They do not prove where or when an image was captured.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer><div class="wrap"><span><b>GeoSense</b> · SIH26227 · Team VARCHASVA · Track 05 build</span><span>rule-based · offline · every label explained</span></div></footer>
+
+<script>
+"use strict";
+/* ======================================================================
+   utilities
+   ====================================================================== */
+const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const KEY = {"likely human-made":"human","likely natural":"natural","uncertain":"uncertain","ignored (cloud)":"ignored"};
+const RGB = {human:[255,77,46], natural:[47,123,255], uncertain:[255,194,46], ignored:[189,189,189]};
+const TAG = {shape:"Shape", bands:"Bands", context:"Context"};
+const STEP_TEXT = {inputs:"Input files & settings", preprocess:"Resize & brightness match", detect:"Change detection",
+                   attribute:"Every region's label", summary:"Totals"};
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const sleep = ms => new Promise(r => setTimeout(r, reduceMotion ? 0 : ms));
+const params = new URLSearchParams(location.search);
+
+/* ======================================================================
+   chain-core: Python-compatible canonical JSON + SHA-256
+   (kept dependency-free; tests/test_attribute.py runs it under Node)
+   ====================================================================== */
+/* chain-core:start */
+const GENESIS = "0".repeat(64);
+function pyStr(s) {
+  let out = '"';
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i), ch = s[i];
+    if (ch === '"') out += '\\"';
+    else if (ch === "\\") out += "\\\\";
+    else if (c === 10) out += "\\n";
+    else if (c === 13) out += "\\r";
+    else if (c === 9) out += "\\t";
+    else if (c === 8) out += "\\b";
+    else if (c === 12) out += "\\f";
+    else if (c < 0x20 || c > 0x7e) out += "\\u" + c.toString(16).padStart(4, "0");
+    else out += ch;
+  }
+  return out + '"';
+}
+function pyJson(v) {
+  if (v === null || v === undefined) return "null";
+  if (typeof v === "boolean") return v ? "true" : "false";
+  if (typeof v === "number") return Number.isFinite(v) ? String(v) : "null";
+  if (typeof v === "string") return pyStr(v);
+  if (Array.isArray(v)) return "[" + v.map(pyJson).join(",") + "]";
+  return "{" + Object.keys(v).sort().map(k => pyStr(k) + ":" + pyJson(v[k])).join(",") + "}";
+}
+const SHA_K = new Uint32Array([0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+  0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,0xe49b69c1,0xefbe4786,0x0fc19dc6,
+  0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,
+  0x06ca6351,0x14292967,0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,0xa2bfe8a1,
+  0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,
+  0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2]);
+function sha256Fallback(bytes) {
+  // Plain-JS SHA-256 for pages where crypto.subtle is unavailable (e.g. served over plain http on a LAN IP).
+  const H = new Uint32Array([0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19]);
+  const n = bytes.length, blocks = (n + 9 + 63) >> 6, buf = new Uint8Array(blocks * 64);
+  buf.set(bytes); buf[n] = 0x80;
+  const dv = new DataView(buf.buffer);
+  dv.setUint32(buf.length - 4, (n * 8) >>> 0); dv.setUint32(buf.length - 8, Math.floor(n / 0x20000000));
+  const W = new Uint32Array(64), rot = (x, k) => (x >>> k) | (x << (32 - k));
+  for (let blk = 0; blk < blocks; blk++) {
+    for (let t = 0; t < 16; t++) W[t] = dv.getUint32(blk * 64 + t * 4);
+    for (let t = 16; t < 64; t++) {
+      const s0 = rot(W[t-15], 7) ^ rot(W[t-15], 18) ^ (W[t-15] >>> 3);
+      const s1 = rot(W[t-2], 17) ^ rot(W[t-2], 19) ^ (W[t-2] >>> 10);
+      W[t] = (W[t-16] + s0 + W[t-7] + s1) >>> 0;
+    }
+    let a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+    for (let t = 0; t < 64; t++) {
+      const t1 = (h + (rot(e, 6) ^ rot(e, 11) ^ rot(e, 25)) + ((e & f) ^ (~e & g)) + SHA_K[t] + W[t]) >>> 0;
+      const t2 = ((rot(a, 2) ^ rot(a, 13) ^ rot(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) >>> 0;
+      h = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+    }
+    H[0] = (H[0] + a) >>> 0; H[1] = (H[1] + b) >>> 0; H[2] = (H[2] + c) >>> 0; H[3] = (H[3] + d) >>> 0;
+    H[4] = (H[4] + e) >>> 0; H[5] = (H[5] + f) >>> 0; H[6] = (H[6] + g) >>> 0; H[7] = (H[7] + h) >>> 0;
+  }
+  return Array.from(H, x => x.toString(16).padStart(8, "0")).join("");
+}
+async function sha256Hex(data) {
+  const bytes = typeof data === "string" ? new TextEncoder().encode(data) : new Uint8Array(data);
+  const subtle = globalThis.crypto && globalThis.crypto.subtle;
+  if (subtle) {
+    try {
+      const d = await subtle.digest("SHA-256", bytes);
+      return Array.from(new Uint8Array(d), x => x.toString(16).padStart(2, "0")).join("");
+    } catch (_) { /* fall through */ }
+  }
+  return sha256Fallback(bytes);
+}
+async function blockHash(link) {
+  return sha256Hex(link.prev + pyJson({step: link.step, detail: link.detail, ts: link.ts, prev: link.prev}));
+}
+/** Status per block: valid | mismatch (contents changed) | broken-link (prev pointer no longer
+    matches the previous block's recomputed hash) | after-break (fine itself, but follows a break). */
+async function verifyLinks(links) {
+  const out = [];
+  let expectedPrev = GENESIS, broken = false;
+  for (const l of links) {
+    const recomputed = await blockHash(l);
+    let status = "valid";
+    if (recomputed !== l.hash) status = "mismatch";
+    else if (l.prev !== expectedPrev) status = "broken-link";
+    else if (broken) status = "after-break";
+    if (status !== "valid") broken = true;
+    out.push({n: l.n, status, recomputed});
+    expectedPrev = recomputed;
+  }
+  return out;
+}
+async function addBlock(chain, step, detail) {
+  const prev = chain.length ? chain[chain.length - 1].hash : GENESIS;
+  const ts = new Date().toISOString().slice(0, 19) + "+00:00";
+  const link = {step, detail, ts, prev};
+  link.hash = await blockHash(link);
+  link.n = chain.length + 1;
+  chain.push(link);
+  return link;
+}
+/* chain-core:end */
+
+/* ======================================================================
+   state
+   ====================================================================== */
+const S = {
+  mode: "wait",            // live | sample
+  samples: [],
+  files: {before: null, after: null},
+  previews: {before: null, after: null},
+  result: null,            // API-shaped result
+  labels: null,            // {data: Int32Array, w, h}
+  images: null,            // {before, after} URLs
+  selected: null,
+  filter: "all",
+  showLabels: true,
+  showZone: true,
+  tampered: null,
+  sampleScene: null,
+  source: "demo",          // demo | upload
+  sampleName: null,        // selected demo scenario
+  runScenario: null,       // scenario (or null for uploads) behind the result on screen
+};
+
+/* ======================================================================
+   start-up: live API or sample mode
+   ====================================================================== */
+async function boot() {
+  let live = location.protocol !== "file:" && !params.has("sample");
+  if (live) {
+    try {
+      const ctl = new AbortController(); const t = setTimeout(() => ctl.abort(), 3000);
+      const r = await fetch("/api/compare/samples", {signal: ctl.signal});
+      clearTimeout(t);
+      if (!r.ok) throw new Error(r.status);
+      S.samples = (await r.json()).samples || [];
+    } catch (_) { live = false; }
+  }
+  S.mode = live ? "live" : "sample";
+  const mode = $("#mode");
+  mode.className = "mode " + S.mode;
+  mode.querySelector("span").textContent = live ? "Live API" : "Sample mode";
+  if (!live) {
+    S.sampleScene = drawSampleScene();
+    S.samples = [{name: "__browser_sample", title: "Sample data — drawn in your browser (not real imagery)",
+                  short_title: "Offline sample scene", kind: "drawn", place: "drawn in this browser",
+                  dates: "no satellite data", order: 1, featured: true,
+                  ps: ["Land excavation", "Flooding (natural)", "Cloud filter"],
+                  why: "The API is not reachable, so this page drew a scene itself and scripts the result from that drawing. It shows the whole flow offline; the hash chain is still real SHA-256.",
+                  look_for: ["The cleared patch turns red, linked to a new track, and is flagged outside the lease",
+                             "The flood beside the river turns blue: irregular edge, new water",
+                             "The cloud is ignored and the small scar stays amber (uncertain)",
+                             "Then open the evidence chain: Verify, then Tamper"],
+                  pixel_m: 10, simulated: false, zone: [8, 8, 58, 94],
+                  zone_note: "Example lease boundary: the cleared patch sits outside it.",
+                  thumbs: {before: S.sampleScene.beforeURL, after: S.sampleScene.afterURL}}];
+    $("#consoleLink").classList.add("hidden");
+    $("#tabUp").disabled = true;
+    $("#tabUp").title = "Uploads need the GeoSense server (run.sh)";
+  }
+  S.samples.sort((a, b) => (a.order ?? 50) - (b.order ?? 50) || String(a.name).localeCompare(b.name));
+  renderScenarios();
+  const wanted = params.get("scenario");                // deep link: /compare?scenario=jewar_airport
+  const preferred = (wanted && S.samples.find(s => s.name === wanted)) ||
+    S.samples.find(s => s.featured) || S.samples.find(s => s.simulated) || S.samples[0];
+  if (preferred) selectSample(preferred.name, false);
+  if (params.has("autorun")) {                       // kiosk / rehearsal: ?autorun or ?autorun=tamper
+    await run({scroll: false});
+    if (params.get("autorun") === "tamper" && S.result) $("#tamper").click();
+  }
+}
+
+/* ======================================================================
+   inputs
+   ====================================================================== */
+function currentSample() { return S.samples.find(s => s.name === S.sampleName) || null; }
+const kindOf = s => s.kind || (s.simulated ? "simulated" : "real");
+const KIND_LABEL = {real: "Real satellite", simulated: "Simulated", drawn: "Drawn sample", upload: "Your images"};
+
+/* ---------- scenario picker ---------- */
+function scenarioCard(s) {
+  const k = kindOf(s), ps = (s.ps || []).map(p => `<span class="${/limit/i.test(p) ? "limit" : ""}">${esc(p)}</span>`).join("");
+  const meta = [s.place, s.dates, s.pixel_m ? `${(+s.pixel_m).toFixed(1)} m/px` : ""].filter(Boolean).map(esc).join(" · ");
+  const thumbs = s.thumbs || {};
+  return `<button type="button" class="scen" role="radio" aria-checked="false" tabindex="-1" data-name="${esc(s.name)}">
+    <span class="sthumb" aria-hidden="true"><img src="${esc(thumbs.before || "")}" alt="" loading="lazy"><img class="aft" src="${esc(thumbs.after || "")}" alt="" loading="lazy"><i></i><em>Before</em><em class="r">After</em></span>
+    <span class="sbody">
+      <span class="stop">${s.featured ? `<b class="sorder">${esc(s.order)}</b>` : ""}<span class="kind ${k}">${KIND_LABEL[k]}</span>${s.featured && s.order === 1 ? `<span class="start">Start here</span>` : ""}</span>
+      <strong>${esc(s.short_title || s.title)}</strong>
+      <small>${meta}</small>
+      ${ps ? `<span class="pstags">${ps}</span>` : ""}
+    </span>
+    <span class="scheck">✓</span></button>`;
+}
+
+function renderScenarios() {
+  const featured = S.samples.filter(s => s.featured), more = S.samples.filter(s => !s.featured);
+  const top = featured.length ? featured : S.samples;
+  $("#featured").innerHTML = top.map(scenarioCard).join("");
+  const rest = featured.length ? more : [];
+  $("#more").innerHTML = rest.map(scenarioCard).join("");
+  $("#moreWrap").hidden = !rest.length;
+  $("#moreCount").textContent = rest.length ? `(${rest.length})` : "";
+  $$(".scen").forEach(b => {
+    b.addEventListener("click", () => selectSample(b.dataset.name, true));
+    b.addEventListener("keydown", e => {
+      const all = $$(".scen").filter(x => x.offsetParent !== null), i = all.indexOf(b);
+      const next = {ArrowDown: 1, ArrowRight: 1, ArrowUp: -1, ArrowLeft: -1}[e.key];
+      if (next == null) return;
+      e.preventDefault();
+      const target = all[(i + next + all.length) % all.length];
+      selectSample(target.dataset.name, true); target.focus();
+    });
+  });
+}
+
+function selectSample(name, userAction) {
+  const s = S.samples.find(x => x.name === name);
+  if (!s) return;
+  S.sampleName = name;
+  setSource("demo");
+  $$(".scen").forEach(b => {
+    const on = b.dataset.name === name;
+    b.setAttribute("aria-checked", String(on)); b.tabIndex = on ? 0 : -1;
+  });
+  if (!s.featured) $("#moreWrap").open = true;
+  $("#scenInfo").innerHTML = scenarioInfo(s);
+  $("#pixel").value = s.pixel_m;
+  if (s.zone) { setZone(s.zone); $("#zoneOn").checked = true; } else { $("#zoneOn").checked = false; }
+  $("#znote").textContent = s.zone_note || "Drag on the image to draw the boundary, or type the edges as percentages.";
+  syncZoneBox();
+  setZonePreview(s.thumbs && s.thumbs.before);
+  if (userAction) showErr("");
+}
+
+function scenarioInfo(s) {
+  const look = (s.look_for || []).map(x => `<li>${esc(x)}</li>`).join("");
+  return `<div class="why"><b>Why this one</b><p>${esc(s.why || s.story || "")}</p></div>` +
+         (look ? `<div class="look"><b>What to look for</b><ol>${look}</ol></div>` : "");
+}
+
+function setSource(src) {
+  S.source = src;
+  $("#tabDemo").setAttribute("aria-selected", String(src === "demo"));
+  $("#tabUp").setAttribute("aria-selected", String(src === "upload"));
+  $("#tabDemo").tabIndex = src === "demo" ? 0 : -1;
+  $("#tabUp").tabIndex = src === "upload" ? 0 : -1;
+  $("#paneDemo").hidden = src !== "demo";
+  $("#paneUp").hidden = src !== "upload";
+  if (src === "upload") {
+    setZonePreview(S.previews.before);
+    $("#znote").textContent = "Drag on the image to draw the boundary, or type the edges as percentages.";
+  } else {
+    const s = currentSample();
+    setZonePreview(s && s.thumbs && s.thumbs.before);
+  }
+}
+
+function clearFiles() {
+  for (const k of ["before", "after"]) {
+    S.files[k] = null;
+    if (S.previews[k]) URL.revokeObjectURL(S.previews[k]);
+    S.previews[k] = null;
+    const cap = k[0].toUpperCase() + k.slice(1), drop = $("#drop" + cap);
+    $("#file" + cap).value = "";
+    drop.classList.remove("has");
+    drop.querySelector("img")?.remove();
+    $("#fn" + cap).textContent = "PNG · JPG · TIFF";
+  }
+}
+
+function onFile(which, file) {
+  if (!file) return;
+  if (file.size > 20 * 1024 * 1024) { showErr(`${file.name} is over 20 MB.`); return; }
+  showErr("");
+  const cap = which[0].toUpperCase() + which.slice(1), drop = $("#drop" + cap);
+  S.files[which] = file;
+  if (S.previews[which]) URL.revokeObjectURL(S.previews[which]);
+  S.previews[which] = /\.tiff?$/i.test(file.name) ? null : URL.createObjectURL(file);
+  drop.querySelector("img")?.remove();
+  if (S.previews[which]) { const img = new Image(); img.src = S.previews[which]; img.alt = ""; drop.prepend(img); }
+  drop.classList.add("has");
+  $("#fn" + cap).textContent = file.name;
+  if (which === "before") setZonePreview(S.previews.before);
+}
+
+function showErr(text) { $("#err").innerHTML = text ? `<div class="err">${esc(text)}</div>` : ""; }
+
+/* ---------- permitted zone ---------- */
+function getZone() {
+  const v = ["#zl", "#zt", "#zr", "#zb"].map(id => Math.max(0, Math.min(100, parseFloat($(id).value) || 0)));
+  return v;
+}
+function setZone(z) {
+  ["#zl", "#zt", "#zr", "#zb"].forEach((id, i) => $(id).value = Math.round(z[i]));
+  drawZoneRect();
+}
+function zoneValid(z) { return z[0] < z[2] && z[1] < z[3]; }
+function drawZoneRect() {
+  const z = getZone(), r = $("#zrect");
+  r.style.left = z[0] + "%"; r.style.top = z[1] + "%";
+  r.style.width = Math.max(0, z[2] - z[0]) + "%"; r.style.height = Math.max(0, z[3] - z[1]) + "%";
+}
+function syncZoneBox() { $("#zoneBox").classList.toggle("on", $("#zoneOn").checked); drawZoneRect(); }
+function setZonePreview(url) {
+  const img = $("#zimg");
+  if (url) { img.src = url; img.hidden = false; $("#zempty").classList.add("hidden"); }
+  else { img.hidden = true; $("#zempty").classList.remove("hidden"); }
+  img.onload = () => { $("#zpick").style.aspectRatio = `${img.naturalWidth} / ${img.naturalHeight}`; };
+}
+(function zonePicker() {
+  const box = $("#zpick");
+  let start = null;
+  const pct = e => {
+    const b = box.getBoundingClientRect();
+    return [Math.max(0, Math.min(100, (e.clientX - b.left) / b.width * 100)),
+            Math.max(0, Math.min(100, (e.clientY - b.top) / b.height * 100))];
+  };
+  box.addEventListener("pointerdown", e => { start = pct(e); box.setPointerCapture(e.pointerId); });
+  box.addEventListener("pointermove", e => {
+    if (!start) return;
+    const p = pct(e);
+    setZone([Math.min(start[0], p[0]), Math.min(start[1], p[1]), Math.max(start[0], p[0]), Math.max(start[1], p[1])]);
+  });
+  box.addEventListener("pointerup", () => { start = null; });
+})();
+
+/* ======================================================================
+   compare
+   ====================================================================== */
+function asBase64(file) {
+  return new Promise((ok, fail) => {
+    const fr = new FileReader();
+    fr.onload = () => ok(String(fr.result).split(",", 2)[1]);
+    fr.onerror = () => fail(new Error(`Could not read ${file.name}.`));
+    fr.readAsDataURL(file);
+  });
+}
+
+async function run(opts = {}) {
+  const scroll = opts.scroll !== false;          // a click event passes no options: scroll to results
+  showErr("");
+  const zoneOn = $("#zoneOn").checked, zone = getZone();
+  if (zoneOn && !zoneValid(zone)) { showErr("The permitted zone needs left < right and top < bottom."); return; }
+  const settings = {pixel_m: parseFloat($("#pixel").value) || null,
+                    sensitivity: parseFloat($("#sens").value),
+                    min_region_px: parseInt($("#minpx").value, 10) || null,
+                    zone: zoneOn ? zone : null};
+  $("#run").disabled = true;
+  const t0 = performance.now();
+  S.pendingScenario = S.source === "demo" ? currentSample() : null;
+  try {
+    if (S.mode === "sample") {
+      setStatus("drawing & analysing the sample…");
+      await sleep(350);
+      await useResult(await buildSampleResult(settings));
+    } else {
+      const body = {...settings};
+      if (S.source === "upload") {
+        if (!(S.files.before && S.files.after)) throw new Error("Add both a before and an after image, or switch back to Demo scenarios.");
+        setStatus("reading files…");
+        body.before_b64 = await asBase64(S.files.before);
+        body.after_b64 = await asBase64(S.files.after);
+        body.before_name = S.files.before.name; body.after_name = S.files.after.name;
+      } else if (S.sampleName) {
+        body.sample = S.sampleName;
+      } else {
+        throw new Error("Pick a scenario or upload two images.");
+      }
+      setStatus("analysing on the server…");
+      const r = await fetch("/api/compare", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+      const data = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail : (data.detail ? JSON.stringify(data.detail) : `Server error ${r.status}`));
+      await useResult(data);
+    }
+    setStatus(`done in ${((performance.now() - t0) / 1000).toFixed(1)} s · analysis ${S.result.id}`);
+    console.info(`GeoSense: ${S.mode} analysis ${S.result.id} in ${Math.round(performance.now() - t0)} ms`);
+    if (scroll) $("#results").scrollIntoView({behavior: reduceMotion ? "auto" : "smooth"});
+  } catch (e) {
+    showErr(e.message || String(e)); setStatus("");
+  } finally {
+    $("#run").disabled = false;
+  }
+}
+function setStatus(t) { $("#status").textContent = t; }
+
+async function useResult(data) {
+  S.result = data; S.selected = null; S.tampered = null; S.filter = "all";
+  S.runScenario = S.pendingScenario || null;
+  if (data.__sample) {
+    S.images = {before: data.__sample.beforeURL, after: data.__sample.afterURL};
+    S.labels = data.__sample.labels;
+  } else {
+    S.images = {before: data.urls.before, after: data.urls.after};
+    S.labels = await decodeLabels(data.urls.labels);
+  }
+  render();
+}
+
+function decodeLabels(url) {
+  return new Promise((ok, fail) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement("canvas"); c.width = img.naturalWidth; c.height = img.naturalHeight;
+      const ctx = c.getContext("2d", {willReadFrequently: true}); ctx.drawImage(img, 0, 0);
+      const px = ctx.getImageData(0, 0, c.width, c.height).data, data = new Int32Array(c.width * c.height);
+      for (let i = 0; i < data.length; i++) data[i] = px[i * 4] + 256 * px[i * 4 + 1];
+      ok({data, w: c.width, h: c.height});
+    };
+    img.onerror = () => fail(new Error("Could not load the region map."));
+    img.src = url;
+  });
+}
+
+/* ======================================================================
+   render
+   ====================================================================== */
+function render() {
+  const d = S.result, s = d.summary, st = d.settings, src = d.inputs.source || {};
+  ["#results", "#chain", "#reportSec"].forEach(id => $(id).classList.remove("hidden"));
+  $("#sampleBanner").classList.toggle("hidden", !d.__sample);
+  $("#sampleBanner").textContent = "SAMPLE MODE — the API is not reachable. This imagery was drawn in your browser and the result is scripted from that drawing. The evidence chain below is real SHA-256. Do not present this as satellite data.";
+  $("#simBanner").classList.toggle("hidden", !src.simulated);
+  $("#guide").innerHTML = guideHtml(S.runScenario);
+  $("#resMeta").innerHTML = [
+    `<span class="chip">${esc(d.id)}</span>`,
+    `<span class="chip">${(+st.pixel_m).toFixed(2)} m/px</span>`,
+    `<span class="chip">${st.working_size[0]}×${st.working_size[1]} px</span>`].join("");
+
+  const v = (cls, label, num, sub) => `<div class="v ${cls}"><b>${label}</b><strong>${num}</strong><span>${sub}</span></div>`;
+  $("#verdicts").innerHTML =
+    v("human", "Likely human-made", s.human, `${s.human_ha.toFixed(2)} ha · ${s.tracks} track${s.tracks === 1 ? "" : "s"}`) +
+    v("natural", "Likely natural", s.natural, `${s.natural_ha.toFixed(2)} ha`) +
+    v("uncertain", "Uncertain", s.uncertain, `${s.uncertain_ha.toFixed(2)} ha · needs review`) +
+    v("ignored", "Ignored (cloud)", s.ignored, `${s.ignored_ha.toFixed(2)} ha · not counted`) +
+    v("total", "Hectares changed", s.changed_ha.toFixed(1), `${s.regions} region${s.regions === 1 ? "" : "s"}`) +
+    (st.zone ? v("zone", "Outside the zone", s.outside_zone, `${s.outside_zone_ha.toFixed(2)} ha beyond the boundary`) : "");
+
+  renderViewer();
+  renderCards();
+  const notes = d.notes || [];
+  $("#notes").classList.toggle("hidden", !notes.length);
+  $("#notes").innerHTML = `<h3>Notes on this run</h3><ul>${notes.map(n => `<li>${esc(n)}</li>`).join("")}</ul>`;
+  renderChain(d.chain.links, null, null);
+  $("#cstatus").className = "cstatus";
+  $("#cstatus").textContent = "Press Verify to recompute every hash in your browser.";
+  $("#fprints").innerHTML = [
+    ["Before file SHA-256", d.inputs.before.sha256], ["After file SHA-256", d.inputs.after.sha256],
+    ["Chain head", d.chain.head], ["Rules fingerprint", st.rules_sha256]]
+    .map(([k, val]) => `<div><b>${k}</b>${esc(val)}</div>`).join("");
+}
+
+/** Jury guide above the verdict: what this scenario is, and what to point at. */
+function guideHtml(s) {
+  const k = s ? kindOf(s) : "upload";
+  const title = s ? (s.short_title || s.title) : "Your own image pair";
+  const why = s ? (s.why || s.story || "") :
+    "Every changed patch is outlined and coloured by its likely cause. Each label carries the evidence behind it, so you can accept or reject it.";
+  const look = s && s.look_for && s.look_for.length ? s.look_for : [
+    "Red is likely human-made, blue likely natural, amber undecided, grey cloud",
+    "Click any region to see the evidence and points behind its label",
+    "Open the evidence chain and press Verify"];
+  return `<div class="gl"><div class="stop">${s && s.featured ? `<b class="sorder">${esc(s.order)}</b>` : ""}<span class="kind ${k}">${KIND_LABEL[k]}</span></div>
+      <h3>${esc(title)}</h3><p>${esc(why)}</p></div>
+    <div class="gr"><b>What to look for</b><ol>${look.map(x => `<li>${esc(x)}</li>`).join("")}</ol></div>`;
+}
+
+/* ---------- viewer ---------- */
+function renderViewer() {
+  const st = S.result.settings, [w, h] = st.working_size, stage = $("#stage");
+  stage.style.setProperty("--ar", `${w} / ${h}`);
+  stage.style.setProperty("--arn", w / h);
+  $("#vBefore").src = S.images.before;
+  $("#vAfter").src = S.images.after;
+  const cv = $("#vOverlay"); cv.width = S.labels.w; cv.height = S.labels.h;
+  drawOverlay();
+  setPos(50);
+  const z = $("#vZone");
+  if (st.zone) {
+    z.style.left = st.zone[0] + "%"; z.style.top = st.zone[1] + "%";
+    z.style.width = (st.zone[2] - st.zone[0]) + "%"; z.style.height = (st.zone[3] - st.zone[1]) + "%";
+  }
+  $("#segZone").disabled = !st.zone;
+  z.classList.toggle("hidden", !(st.zone && S.showZone));
+}
+
+function drawOverlay() {
+  const cv = $("#vOverlay"), ctx = cv.getContext("2d"), {data, w, h} = S.labels;
+  const byId = new Map(S.result.regions.map(r => [r.id, r]));
+  const img = ctx.createImageData(w, h), px = img.data, sel = S.selected;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const p = y * w + x, id = data[p];
+      if (!id) continue;
+      const r = byId.get(id); if (!r) continue;
+      const col = RGB[KEY[r.cause]];
+      const edge = x === 0 || y === 0 || x === w - 1 || y === h - 1 ||
+        data[p - 1] !== id || data[p + 1] !== id || data[p - w] !== id || data[p + w] !== id;
+      const dim = sel && sel !== id;
+      const o = p * 4;
+      if (edge) { px[o] = 11; px[o+1] = 11; px[o+2] = 11; px[o+3] = dim ? 90 : 255; }
+      else { px[o] = col[0]; px[o+1] = col[1]; px[o+2] = col[2]; px[o+3] = dim ? 45 : (sel === id ? 190 : 140); }
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  // numbered badges
+  const fs = Math.max(11, Math.round(w / 42));
+  ctx.font = `900 ${fs}px Archivo, Arial, sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  for (const r of S.result.regions) {
+    if (sel && sel !== r.id) continue;
+    const [cx, cy] = r.centroid, label = String(r.id), bw = ctx.measureText(label).width + fs * 0.7, bh = fs * 1.35;
+    ctx.fillStyle = "#0b0b0b"; ctx.fillRect(cx - bw / 2 + 2, cy - bh / 2 + 2, bw, bh);
+    ctx.fillStyle = `rgb(${RGB[KEY[r.cause]].join(",")})`; ctx.fillRect(cx - bw / 2, cy - bh / 2, bw, bh);
+    ctx.lineWidth = 2; ctx.strokeStyle = "#0b0b0b"; ctx.strokeRect(cx - bw / 2, cy - bh / 2, bw, bh);
+    ctx.fillStyle = "#0b0b0b"; ctx.fillText(label, cx, cy + 1);
+  }
+  cv.style.opacity = S.showLabels ? 1 : 0;
+}
+
+function setPos(pct) {
+  pct = Math.max(0, Math.min(100, pct));
+  $("#stage").style.setProperty("--pos", pct + "%");
+  $("#vHandle").setAttribute("aria-valuenow", Math.round(pct));
+}
+
+function regionAt(e) {
+  if (!S.labels) return null;
+  const b = $("#stage").getBoundingClientRect(), {data, w, h} = S.labels;
+  const x = Math.floor((e.clientX - b.left) / b.width * w), y = Math.floor((e.clientY - b.top) / b.height * h);
+  for (let rad = 0; rad <= 4; rad++) {          // a little slack so thin tracks are clickable
+    for (let dy = -rad; dy <= rad; dy++) for (let dx = -rad; dx <= rad; dx++) {
+      const xx = x + dx, yy = y + dy;
+      if (xx < 0 || yy < 0 || xx >= w || yy >= h) continue;
+      const id = data[yy * w + xx];
+      if (id) return S.result.regions.find(r => r.id === id) || null;
+    }
+  }
+  return null;
+}
+
+(function viewerInput() {
+  const stage = $("#stage"), tip = $("#vTip");
+  let down = null, dragging = false;
+  const posFrom = e => { const b = stage.getBoundingClientRect(); return (e.clientX - b.left) / b.width * 100; };
+  stage.addEventListener("pointerdown", e => {
+    down = {x: e.clientX, y: e.clientY, onHandle: e.target.closest("#vHandle") !== null};
+    dragging = down.onHandle;
+    stage.setPointerCapture(e.pointerId);
+  });
+  stage.addEventListener("pointermove", e => {
+    if (down && !dragging && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 5) dragging = true;
+    if (down && dragging) { setPos(posFrom(e)); tip.classList.add("hidden"); return; }
+    const r = regionAt(e);
+    if (r) {
+      const b = stage.getBoundingClientRect();
+      tip.style.left = (e.clientX - b.left) + "px"; tip.style.top = (e.clientY - b.top) + "px";
+      tip.textContent = `#${r.id} · ${r.type} · ${r.cause}`;
+      tip.classList.remove("hidden");
+    } else tip.classList.add("hidden");
+  });
+  stage.addEventListener("pointerup", e => {
+    if (down && !dragging) { const r = regionAt(e); select(r ? r.id : null, true); }
+    down = null; dragging = false;
+  });
+  stage.addEventListener("pointerleave", () => tip.classList.add("hidden"));
+  $("#vHandle").addEventListener("keydown", e => {
+    const cur = parseFloat(stage.style.getPropertyValue("--pos")) || 50;
+    if (e.key === "ArrowLeft") { setPos(cur - 5); e.preventDefault(); }
+    if (e.key === "ArrowRight") { setPos(cur + 5); e.preventDefault(); }
+  });
+})();
+
+function select(id, fromViewer) {
+  S.selected = S.selected === id ? null : id;
+  drawOverlay();
+  $$(".rcard").forEach(c => c.classList.toggle("sel", +c.dataset.id === S.selected));
+  if (S.selected == null) return;
+  const r = S.result.regions.find(x => x.id === S.selected);
+  if (r && S.filter !== "all" && r.cause !== S.filter) setFilter("all");
+  const card = $(`#card-${S.selected}`);
+  if (fromViewer && card) card.scrollIntoView({behavior: reduceMotion ? "auto" : "smooth", block: "center"});
+  if (!fromViewer) {
+    const b = $("#stage").getBoundingClientRect();
+    if (b.bottom < 80 || b.top > innerHeight) $("#stage").scrollIntoView({behavior: reduceMotion ? "auto" : "smooth", block: "center"});
+  }
+}
+
+/* ---------- cards ---------- */
+function renderCards() {
+  const regions = S.result.regions.filter(r => S.filter === "all" || r.cause === S.filter);
+  $$("#filters button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.f === S.filter)));
+  if (!S.result.regions.length) { $("#cards").innerHTML = `<div class="panel" style="padding:18px">No changed regions at these settings. Try a higher sensitivity or a smaller minimum region.</div>`; return; }
+  $("#cards").innerHTML = regions.map(r => {
+    const k = KEY[r.cause];
+    const facts = [`${r.area_ha.toFixed(2)} ha`, `${r.area_px} px`, `FD ${r.fd ?? "n/a"}`,
+                   `straight lines ${r.rectilinearity ?? "n/a"}`, `solidity ${r.solidity}`];
+    const ev = (r.evidence || r.reasons.map(t => ({tag: "bands", text: t, points: 0}))).map(e => {
+      const p = e.points ? `<span class="pts ${e.points > 0 ? "up" : "down"}" title="${e.points > 0 ? "towards human-made" : "towards natural"}">${e.points > 0 ? "+" : "−"}${Math.abs(e.points)}</span>` : "<span></span>";
+      return `<li><span class="tag t-${esc(e.tag)}">${TAG[e.tag] || esc(e.tag)}</span><span>${esc(e.text)}</span>${p}</li>`;
+    }).join("");
+    const flag = r.outside_zone ? `<div class="flag"><span>Outside the permitted zone · ${Math.round(r.outside_zone_frac * 100)}% beyond the boundary</span></div>` : "";
+    return `<article class="rcard${S.selected === r.id ? " sel" : ""}" id="card-${r.id}" data-id="${r.id}" tabindex="0" aria-label="Region ${r.id}: ${esc(r.type)}, ${esc(r.cause)}">
+      <div class="rhead"><span class="rnum k-${k}">${r.id}</span>
+        <div class="rtitle"><h3>${esc(r.type)}</h3><small>${r.is_track ? "new access track" : r.track_link ? "connected to a new track" : "region " + r.id}</small></div>
+        <span class="cause k-${k}">${esc(r.cause)}</span></div>
+      <div class="rbody">
+        ${signalRows(r, k)}
+        <div class="facts">${facts.map(f => `<span class="chip">${esc(f)}</span>`).join("")}</div>
+        <ul class="ev">${ev}</ul>
+        ${r.next_step ? `<div class="settle"><b>To settle it</b>${esc(r.next_step)}</div>` : ""}${flag}
+      </div></article>`;
+  }).join("") || `<div class="panel" style="padding:18px">No regions in this group.</div>`;
+  $$(".rcard").forEach(c => {
+    c.addEventListener("click", () => select(+c.dataset.id, false));
+    c.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select(+c.dataset.id, false); } });
+  });
+}
+/** Two separate answers: is the change real (noise sigmas), and who caused it (score on a meter). */
+const SIGMA_MAX = 8, SIGMA_CUT = 3;
+function signalRows(r, k) {
+  const z = r.change_sigma ?? null, score = r.human_score;
+  const cutPct = SIGMA_CUT / SIGMA_MAX * 100;
+  const zFill = z == null ? 0 : Math.min(z, SIGMA_MAX) / SIGMA_MAX * 100;
+  const zText = z == null ? "n/a" : `${z >= 99 ? "99+" : z.toFixed(1)}σ · ${esc(r.change_label || "")}`;
+  const cloud = r.cause === "ignored (cloud)";
+  const cause = cloud ? `<div class="sigrow"><span class="lbl">Who caused it</span><div class="leantext k-ignored">Cloud, not a ground change: left out of every total</div></div>` : `
+    <div class="sigrow"><span class="lbl">Who caused it</span>
+      <div class="lean" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${score}" aria-label="Cause score ${score} of 100, ${esc(r.lean || "")}">
+        <span class="bn"></span><span class="bu"></span><span class="bh"></span><b style="left:${score}%"></b></div>
+      <span class="val">${score}<small>/100</small></span></div>
+    <div class="leanaxis"><span>Natural</span><span>Undecided</span><span>Human-made</span></div>
+    <div class="leantext k-${k}">${esc(r.lean || r.cause)}</div>`;
+  return `<div class="sig">
+    <div class="sigrow"><span class="lbl">Change is real</span>
+      <div class="zbar" role="meter" aria-valuemin="0" aria-valuemax="${SIGMA_MAX}" aria-valuenow="${z ?? 0}" aria-label="Change signal ${z ?? "n/a"} sigma above the image noise">
+        <span class="noise" style="width:${cutPct}%">noise</span><i style="left:${cutPct}%;width:${Math.max(0, zFill - cutPct)}%"></i>${z >= SIGMA_MAX ? "<em>▶</em>" : ""}</div>
+      <span class="val">${zText}</span></div>
+    <div class="zhelp">${z == null ? "" : `${z.toFixed(1)}× the image's noise · reported from ${SIGMA_CUT}σ`}</div>
+    ${cause}</div>`;
+}
+
+function setFilter(f) { S.filter = f; renderCards(); }
+$$("#filters button").forEach(b => b.addEventListener("click", () => setFilter(b.dataset.f)));
+
+/* ---------- evidence chain ---------- */
+function blockSummary(l) {
+  const d = l.detail || {};
+  switch (l.step) {
+    case "inputs": return `before ${String(d.before?.sha256 || "").slice(0, 10)}… · after ${String(d.after?.sha256 || "").slice(0, 10)}…` + (d.zone ? " · zone set" : "");
+    case "preprocess": return `working ${d.working_size?.join("×")} px · ${d.working_pixel_m} m/px`;
+    case "detect": return `${d.changed_px ?? "?"} px changed → ${d.regions ?? "?"} regions, ${d.tracks ?? 0} tracks`;
+    case "attribute": {
+      const r = (d.regions || [])[0];
+      return r ? `${d.regions.length} labels · region 1: ${esc(r.type)}, <b>${esc(r.cause)}</b>` : "no regions";
+    }
+    case "summary": return `${d.human} human · ${d.natural} natural · ${d.uncertain} uncertain · ${d.changed_ha} ha`;
+    default: return "";
+  }
+}
+const STAMP = {valid: "✓ Valid", mismatch: "✗ Contents changed", "broken-link": "✗ Link broken", "after-break": "✗ After a break", checking: "… hashing"};
+
+function renderChain(links, statuses, tamper) {
+  const st = new Map((statuses || []).map(s => [s.n, s]));
+  const linkSvg = `<svg viewBox="0 0 24 24" fill="none" stroke="#0b0b0b" stroke-width="2.6" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1"/></svg>`;
+  $("#chainrow").innerHTML = links.map((l, i) => {
+    const s = st.get(l.n), cls = s ? s.status : "";
+    const brokenLink = s && (s.status === "broken-link" || s.status === "after-break" || s.status === "mismatch");
+    const connector = i ? `<div class="clink${brokenLink ? " broken" : ""}" aria-hidden="true">${linkSvg}</div>` : "";
+    const tam = tamper && tamper.n === l.n ? `<div class="tampered">${esc(tamper.path)}: <s>${esc(tamper.old)}</s> → ${esc(tamper.now)}</div>` : "";
+    const recomputed = s && s.recomputed !== l.hash ? `<div class="kv"><b>Recomputed hash</b>${s.recomputed.slice(0, 24)}…</div>` : "";
+    return `${connector}<div class="cblk ${cls}" data-n="${l.n}">
+      <div class="bh"><span>Block #${l.n}</span><span>${esc(l.step)}</span></div>
+      <div class="bb"><div class="what">${esc(STEP_TEXT[l.step] || l.step)}<br><span style="font-weight:500">${blockSummary(l)}</span></div>
+        ${tam}
+        <div class="kv"><b>Prev</b>${l.prev.slice(0, 24)}…</div>
+        <div class="kv"><b>Stored hash</b>${l.hash.slice(0, 24)}…</div>${recomputed}
+        <details><summary>Block JSON</summary><pre>${esc(JSON.stringify({step: l.step, detail: l.detail, ts: l.ts, prev: l.prev}, null, 1))}</pre></details>
+      </div>
+      <div class="stamp">${s ? STAMP[s.status] : "not checked"}</div></div>`;
+  }).join("");
+}
+
+async function verifyChain(links, tamper) {
+  ["#verify", "#tamper", "#reset"].forEach(id => $(id).disabled = true);
+  renderChain(links, null, tamper);
+  const statuses = await verifyLinks(links);
+  for (let i = 0; i < statuses.length; i++) {
+    const shown = statuses.slice(0, i).concat([{n: statuses[i].n, status: "checking", recomputed: statuses[i].recomputed}]);
+    renderChain(links, shown, tamper);
+    await sleep(170);
+  }
+  renderChain(links, statuses, tamper);
+  const bad = statuses.find(s => s.status !== "valid");
+  const box = $("#cstatus");
+  if (bad) {
+    box.className = "cstatus bad";
+    box.textContent = `✗ Chain broken from block #${bad.n} onward. One edited value changed that block's hash, so every later link fails.`;
+  } else {
+    box.className = "cstatus ok";
+    box.textContent = `✓ All ${statuses.length} blocks verified in your browser. Head ${links[links.length - 1].hash.slice(0, 16)}…`;
+  }
+  ["#verify", "#tamper", "#reset"].forEach(id => $(id).disabled = false);
+}
+
+$("#verify").addEventListener("click", () => verifyChain(S.tampered ? S.tampered.links : S.result.chain.links, S.tampered && S.tampered.info));
+$("#tamper").addEventListener("click", () => {
+  const links = JSON.parse(JSON.stringify(S.result.chain.links));
+  let info;
+  const att = links.find(l => l.step === "attribute" && (l.detail.regions || []).length);
+  if (att) {
+    const r = att.detail.regions[0], old = r.cause;
+    r.cause = old === "likely natural" ? "likely human-made" : "likely natural";
+    info = {n: att.n, path: "region 1 cause", old, now: r.cause};
+  } else {
+    const blk = links.find(l => l.step === "summary") || links[links.length - 1];
+    const old = blk.detail.changed_ha ?? 0;
+    blk.detail.changed_ha = old + 1;
+    info = {n: blk.n, path: "changed_ha", old: String(old), now: String(old + 1)};
+  }
+  S.tampered = {links, info};
+  verifyChain(links, info);
+});
+$("#reset").addEventListener("click", () => {
+  S.tampered = null;
+  renderChain(S.result.chain.links, null, null);
+  $("#cstatus").className = "cstatus";
+  $("#cstatus").textContent = "Original chain restored. Press Verify to recompute every hash.";
+});
+
+/* ---------- report ---------- */
+$("#repHtml").addEventListener("click", () => {
+  if (!S.result) return;
+  if (!S.result.__sample) { window.open(S.result.urls.report_html, "_blank", "noopener"); return; }
+  const w = window.open("", "_blank");
+  if (w) { w.document.write(sampleReportHtml(S.result)); w.document.close(); }
+});
+$("#repMd").addEventListener("click", async () => {
+  if (!S.result) return;
+  if (!S.result.__sample) { location.href = S.result.urls.report_md; return; }
+  const md = await sampleReportMarkdown(S.result);
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([md], {type: "text/markdown"}));
+  a.download = `geosense-${S.result.id}.md`; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+});
+
+/* ---------- controls ---------- */
+$("#segLab").addEventListener("click", () => { S.showLabels = true; toggleRight(); });
+$("#segAft").addEventListener("click", () => { S.showLabels = false; toggleRight(); });
+function toggleRight() {
+  $("#segLab").setAttribute("aria-pressed", String(S.showLabels));
+  $("#segAft").setAttribute("aria-pressed", String(!S.showLabels));
+  $("#vTag").textContent = S.showLabels ? "After · labelled" : "After";
+  $("#vOverlay").style.opacity = S.showLabels ? 1 : 0;
+}
+$("#segZone").addEventListener("click", () => {
+  S.showZone = !S.showZone;
+  $("#segZone").setAttribute("aria-pressed", String(S.showZone));
+  $("#vZone").classList.toggle("hidden", !(S.result && S.result.settings.zone && S.showZone));
+});
+for (const which of ["before", "after"]) {
+  const cap = which[0].toUpperCase() + which.slice(1), drop = $("#drop" + cap);
+  $("#file" + cap).addEventListener("change", e => onFile(which, e.target.files[0]));
+  drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("over"); });
+  drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+  drop.addEventListener("drop", e => { e.preventDefault(); drop.classList.remove("over"); onFile(which, e.dataTransfer.files[0]); });
+}
+$("#tabDemo").addEventListener("click", () => setSource("demo"));
+$("#tabUp").addEventListener("click", () => setSource("upload"));
+$$("[role=tab]").forEach(t => t.addEventListener("keydown", e => {
+  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+  const other = t.id === "tabDemo" ? $("#tabUp") : $("#tabDemo");
+  if (!other.disabled) { other.click(); other.focus(); }
+}));
+$("#sens").addEventListener("input", e => $("#sensOut").textContent = (+e.target.value).toFixed(1) + "×");
+$("#zoneOn").addEventListener("change", syncZoneBox);
+["#zl", "#zt", "#zr", "#zb"].forEach(id => $(id).addEventListener("input", drawZoneRect));
+$("#run").addEventListener("click", () => run());
+
+/* ======================================================================
+   SAMPLE MODE — a scene drawn in the browser and a result scripted from it
+   ====================================================================== */
+function mulberry32(seed) {
+  return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+}
+function valueNoise(w, h, cell, rnd) {
+  const gw = Math.ceil(w / cell) + 2, gh = Math.ceil(h / cell) + 2, g = new Float32Array(gw * gh).map(() => rnd() * 2 - 1);
+  const out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const fx = x / cell, fy = y / cell, x0 = Math.floor(fx), y0 = Math.floor(fy), tx = fx - x0, ty = fy - y0;
+    const sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty);
+    const a = g[y0 * gw + x0], b = g[y0 * gw + x0 + 1], c = g[(y0 + 1) * gw + x0], d = g[(y0 + 1) * gw + x0 + 1];
+    out[y * w + x] = (a + (b - a) * sx) * (1 - sy) + (c + (d - c) * sx) * sy;
+  }
+  return out;
+}
+function maskCanvas(w, h, paint) {
+  const c = document.createElement("canvas"); c.width = w; c.height = h;
+  const ctx = c.getContext("2d", {willReadFrequently: true}); ctx.fillStyle = "#fff"; ctx.strokeStyle = "#fff"; paint(ctx);
+  const px = ctx.getImageData(0, 0, w, h).data, m = new Uint8Array(w * h);
+  for (let i = 0; i < m.length; i++) m[i] = px[i * 4 + 3] > 127 ? 1 : 0;
+  return m;
+}
+
+function drawSampleScene() {
+  const W = 640, H = 480, rnd = mulberry32(26227);
+  const base = new Float32Array(W * H * 3);
+  const fields = [[92,132,60],[124,142,74],[152,140,98],[112,100,76],[74,112,52],[136,150,80]];
+  // farmland patchwork
+  for (let y = 0; y < H;) {
+    const fh = 50 + Math.floor(rnd() * 50);
+    for (let x = 0; x < W;) {
+      const fw = 60 + Math.floor(rnd() * 80), col = fields[Math.floor(rnd() * fields.length)];
+      for (let yy = y; yy < Math.min(H, y + fh); yy++) for (let xx = x; xx < Math.min(W, x + fw); xx++) {
+        const o = (yy * W + xx) * 3, hedge = (yy === y || xx === x) ? 0.78 : 1;
+        base[o] = col[0] * hedge; base[o+1] = col[1] * hedge; base[o+2] = col[2] * hedge;
+      }
+      x += fw;
+    }
+    y += fh;
+  }
+  // forest, river, road
+  const forest = maskCanvas(W, H, ctx => { for (let i = 0; i < 26; i++) { ctx.beginPath(); ctx.arc(470 + rnd() * 170, 330 + rnd() * 150, 26 + rnd() * 30, 0, 7); ctx.fill(); } });
+  const river = maskCanvas(W, H, ctx => { ctx.lineWidth = 15; ctx.beginPath(); ctx.moveTo(-10, 300); ctx.bezierCurveTo(140, 250, 220, 420, 380, 390); ctx.bezierCurveTo(500, 370, 560, 440, 650, 420); ctx.stroke(); });
+  const road = maskCanvas(W, H, ctx => { ctx.lineWidth = 6; ctx.beginPath(); ctx.moveTo(-10, 120); ctx.lineTo(300, 150); ctx.lineTo(650, 108); ctx.stroke(); });
+  const tint = (m, col) => { for (let i = 0; i < m.length; i++) if (m[i]) { base[i*3] = col[0]; base[i*3+1] = col[1]; base[i*3+2] = col[2]; } };
+  tint(forest, [38, 78, 42]); tint(river, [30, 52, 70]); tint(road, [188, 180, 166]);
+  const slow = valueNoise(W, H, 48, rnd), fine = valueNoise(W, H, 2.5, rnd);
+  for (let i = 0; i < W * H; i++) { const k = 1 + 0.08 * slow[i]; for (let c = 0; c < 3; c++) base[i*3+c] = base[i*3+c] * k + 9 * fine[i]; }
+
+  // the changes painted into "after"
+  const clearing = maskCanvas(W, H, ctx => { ctx.beginPath(); ctx.moveTo(430, 214); ctx.lineTo(532, 206); ctx.lineTo(540, 288); ctx.lineTo(436, 296); ctx.closePath(); ctx.fill(); });
+  const track = maskCanvas(W, H, ctx => { ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(440, 137); ctx.lineTo(442, 216); ctx.stroke(); });
+  // flood: several random walks fanning out from the river bank, so the edge is fingered like real inundation
+  const flood = maskCanvas(W, H, ctx => {
+    for (let arm = 0; arm < 9; arm++) {
+      let x = 120 + rnd() * 110, y = 300 + rnd() * 50;
+      for (let i = 0; i < 26; i++) {
+        ctx.beginPath(); ctx.arc(x, y, 4 + rnd() * 8, 0, 7); ctx.fill();
+        x += (rnd() - 0.5) * 18; y += (rnd() - 0.6) * 14;
+        x = Math.max(60, Math.min(280, x)); y = Math.max(250, Math.min(410, y));
+      }
+    }
+  });
+  const cloud = maskCanvas(W, H, ctx => { for (let i = 0; i < 9; i++) { ctx.beginPath(); ctx.arc(250 + rnd() * 80, 50 + rnd() * 40, 20 + rnd() * 16, 0, 7); ctx.fill(); } });
+  // small ragged scar along a slope: too small for a shape verdict, so it stays "uncertain"
+  const scar = maskCanvas(W, H, ctx => { for (let i = 0; i < 9; i++) { ctx.beginPath(); ctx.arc(570 + i * 5 + rnd() * 4, 420 + i * 3 + rnd() * 6, 3 + rnd() * 4, 0, 7); ctx.fill(); } });
+  for (let i = 0; i < flood.length; i++) if (river[i]) flood[i] = 0;          // existing river is not new water
+
+  const after = new Float32Array(base);
+  const paint = (m, col, grain) => { for (let i = 0; i < m.length; i++) if (m[i]) for (let c = 0; c < 3; c++) after[i*3+c] = col[c] + grain * fine[(i * 7) % fine.length]; };
+  paint(clearing, [178, 142, 104], 10); paint(track, [180, 152, 118], 4); paint(flood, [40, 58, 84], 5); paint(scar, [150, 118, 86], 8);
+  for (let i = 0; i < cloud.length; i++) if (cloud[i]) for (let c = 0; c < 3; c++) after[i*3+c] = 246 - 4 * Math.abs(fine[i]);
+  for (let i = 0; i < after.length; i++) after[i] = after[i] * 1.04 + 3;   // lighting shift
+
+  const toCanvas = arr => {
+    const c = document.createElement("canvas"); c.width = W; c.height = H;
+    const ctx = c.getContext("2d"), img = ctx.createImageData(W, H);
+    for (let i = 0; i < W * H; i++) { for (let c2 = 0; c2 < 3; c2++) img.data[i*4+c2] = Math.max(0, Math.min(255, arr[i*3+c2])); img.data[i*4+3] = 255; }
+    ctx.putImageData(img, 0, 0); return c;
+  };
+  const bc = toCanvas(base), ac = toCanvas(after);
+  return {W, H, base, after, masks: {clearing, track, flood, cloud, scar}, river,
+          beforeCanvas: bc, afterCanvas: ac, beforeURL: bc.toDataURL("image/png"), afterURL: ac.toDataURL("image/png")};
+}
+
+function measure(mask, W, H) {
+  let area = 0, sx = 0, sy = 0, x0 = W, y0 = H, x1 = 0, y1 = 0, perim = 0;
+  const rowMin = new Int32Array(H).fill(-1), rowMax = new Int32Array(H).fill(-1);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    const p = y * W + x; if (!mask[p]) continue;
+    area++; sx += x; sy += y; x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+    if (rowMin[y] < 0) rowMin[y] = x; rowMax[y] = x;
+    if (!x || !y || x === W - 1 || y === H - 1 || !mask[p-1] || !mask[p+1] || !mask[p-W] || !mask[p+W]) perim++;
+  }
+  // convex hull of row extremes (pixel corners) for solidity
+  const pts = [];
+  for (let y = 0; y < H; y++) if (rowMin[y] >= 0) pts.push([rowMin[y], y], [rowMin[y], y + 1], [rowMax[y] + 1, y], [rowMax[y] + 1, y + 1]);
+  pts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const lower = [], upper = [];
+  for (const p of pts) { while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], p) <= 0) lower.pop(); lower.push(p); }
+  for (const p of pts.slice().reverse()) { while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], p) <= 0) upper.pop(); upper.push(p); }
+  const hull = lower.slice(0, -1).concat(upper.slice(0, -1));
+  let hullArea = 0; for (let i = 0; i < hull.length; i++) { const a = hull[i], b = hull[(i + 1) % hull.length]; hullArea += a[0] * b[1] - b[0] * a[1]; }
+  hullArea = Math.abs(hullArea) / 2 || area;
+  const bw = x1 - x0 + 1, bh = y1 - y0 + 1;
+  return {area, bbox: [x0, y0, x1 + 1, y1 + 1], centroid: [+(sx / area).toFixed(1), +(sy / area).toFixed(1)],
+          perim, fd: area >= 1000 ? +(2 * Math.log(0.25 * perim) / Math.log(area)).toFixed(3) : null,
+          rect: +(area / (bw * bh)).toFixed(3), solidity: +Math.min(1, area / hullArea).toFixed(3),
+          length: Math.hypot(bw, bh)};
+}
+/** Same measure as attribute.rectilinearity: share of outline within ±10° of one direction or its right angle. */
+function rectilinearityOf(mask, W, H, bbox) {
+  const [x0, y0, x1, y1] = bbox, pad = 4, w = x1 - x0 + 2 * pad, h = y1 - y0 + 2 * pad;
+  let a = new Float32Array(w * h);
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) a[(y - y0 + pad) * w + (x - x0 + pad)] = mask[y * W + x];
+  for (let pass = 0; pass < 2; pass++) {
+    const b = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let s = 0;
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++)
+        s += a[Math.min(h - 1, Math.max(0, y + dy)) * w + Math.min(w - 1, Math.max(0, x + dx))];
+      b[y * w + x] = s / 9;
+    }
+    a = b;
+  }
+  const hist = new Float64Array(90); let total = 0;
+  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+    const i = y * w + x, gx = (a[i + 1] - a[i - 1]) / 2, gy = (a[i + w] - a[i - w]) / 2, m = Math.hypot(gx, gy);
+    if (m <= 0.05) continue;
+    let t = Math.atan2(gy, gx) % (Math.PI / 2); if (t < 0) t += Math.PI / 2;
+    hist[Math.min(89, Math.floor(t / (Math.PI / 2) * 90))] += m; total += m;
+  }
+  if (!total) return null;
+  let best = 0;
+  for (let c = 0; c < 90; c++) { let s = 0; for (let k = -10; k <= 10; k++) s += hist[(c + k + 90) % 90]; best = Math.max(best, s); }
+  return +(best / total).toFixed(3);
+}
+function colourChange(scene, mask) {
+  // mean change in Excess Green and in lightness, measured on the drawn pixels
+  let n = 0, dExg = 0, dL = 0, water = 0;
+  const L = (r, g, b) => { const lin = v => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+    const Y = 0.2126729 * lin(r) + 0.7151522 * lin(g) + 0.072175 * lin(b); return Y > 0.008856 ? 116 * Math.cbrt(Y) - 16 : 903.3 * Y; };
+  const exg = (r, g, b) => { const s = r + g + b || 1; return (2 * g - r - b) / s; };
+  for (let i = 0; i < mask.length; i++) {
+    if (!mask[i]) continue; n++;
+    const [r0, g0, b0] = [scene.base[i*3], scene.base[i*3+1], scene.base[i*3+2]];
+    const [r1, g1, b1] = [scene.after[i*3], scene.after[i*3+1], scene.after[i*3+2]];
+    dExg += exg(r1, g1, b1) - exg(r0, g0, b0); dL += L(r1, g1, b1) - L(r0, g0, b0);
+    if (L(r1, g1, b1) < 35 && b1 >= g1 && b1 >= r1) water++;
+  }
+  return {dExg: dExg / n, dL: dL / n, water: water / n};
+}
+function rgbLab(r, g, b) {
+  const lin = v => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+  const R = lin(r), G = lin(g), B = lin(b), f = t => t > (6 / 29) ** 3 ? Math.cbrt(t) : t / (3 * (6 / 29) ** 2) + 4 / 29;
+  const fx = f((0.4124564 * R + 0.3575761 * G + 0.1804375 * B) / 0.95047);
+  const fy = f(0.2126729 * R + 0.7151522 * G + 0.072175 * B);
+  const fz = f((0.0193339 * R + 0.119192 * G + 0.9503041 * B) / 1.08883);
+  return [116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)];
+}
+function pixelDeltaE(sc, i) {
+  const a = rgbLab(sc.base[i*3], sc.base[i*3+1], sc.base[i*3+2]), b = rgbLab(sc.after[i*3], sc.after[i*3+1], sc.after[i*3+2]);
+  return Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+}
+const median = arr => { const s = Float64Array.from(arr).sort(); return s.length ? s[s.length >> 1] : 0; };
+/* Same wording rules as attribute.py: strength_label, lean_text, next_step. */
+function strengthLabel(z) { return z >= 8 ? "very strong" : z >= 5 ? "strong" : z >= 3.5 ? "clear" : "faint"; }
+function leanText(score, cause) {
+  if (cause === "ignored (cloud)") return "Cloud: not counted";
+  const d = Math.abs(score - 50), side = score > 50 ? "human-made" : "natural";
+  return d < 10 ? "Evidence balanced: needs a second look" : d < 25 ? `Leans ${side}` : d < 40 ? `Clearly ${side}` : `Strongly ${side}`;
+}
+function nextStep(r) {
+  if (r.cause !== "uncertain") return null;
+  if (["surface darkening", "unknown", "water loss", "vegetation loss"].includes(r.type))
+    return "NIR/SWIR bands would tell new asphalt, wet ground, burn scar and water apart: true colour cannot";
+  if (r.fd == null) return "Too small for shape evidence: a sharper image would give it enough pixels for a boundary verdict";
+  return "A field check, or a third image date to see whether it keeps growing";
+}
+
+async function buildSampleResult(settings) {
+  const sc = S.sampleScene, {W, H} = sc, pixel = settings.pixel_m || 10, pxHa = pixel * pixel / 10000;
+  const minPx = settings.min_region_px || 80, zone = settings.zone;
+  const ev = (tag, text, points = 0) => ({tag, text, points});
+  const zoneMask = zone ? (i => { const x = i % W, y = (i / W) | 0; return x >= W * zone[0] / 100 && x < W * zone[2] / 100 && y >= H * zone[1] / 100 && y < H * zone[3] / 100; }) : null;
+  const touches = (mask, other) => { let rim = 0, hit = 0; for (let i = 0; i < mask.length; i++) { if (mask[i]) continue; const x = i % W;
+      const near = (x > 2 && mask[i-3]) || (x < W - 3 && mask[i+3]) || mask[i-3*W] || mask[i+3*W]; if (near) { rim++; if (other[i]) hit++; } } return rim ? hit / rim : 0; };
+  const defs = [
+    {key: "clearing", mask: sc.masks.clearing}, {key: "track", mask: sc.masks.track}, {key: "flood", mask: sc.masks.flood},
+    {key: "cloud", mask: sc.masks.cloud}, {key: "scar", mask: sc.masks.scar}];
+  // the image's own noise: median and robust spread of the colour difference over a pixel sample
+  const sampleDE = [];
+  for (let i = 0; i < W * H; i += 61) sampleDE.push(pixelDeltaE(sc, i));
+  const dEmed = median(sampleDE), dEsigma = Math.max(0.01, 1.4826 * median(sampleDE.map(v => Math.abs(v - dEmed))));
+  const regions = [];
+  for (const d of defs) {
+    const m = measure(d.mask, W, H);
+    if (m.area < minPx && d.key !== "track") continue;
+    const cc = colourChange(sc, d.mask);
+    const inside = [];
+    for (let i = 0; i < d.mask.length; i++) if (d.mask[i]) inside.push(i);
+    const step = Math.max(1, Math.floor(inside.length / 3000));
+    const regionDE = median(inside.filter((_, j) => j % step === 0).map(i => pixelDeltaE(sc, i)));
+    const changeSigma = +Math.min(99, Math.max(0, (regionDE - dEmed) / dEsigma)).toFixed(1);
+    const r = {area_px: m.area, area_ha: +(m.area * pxHa).toFixed(4), bbox: m.bbox, centroid: m.centroid, fd: m.fd,
+               rectangularity: m.rect, solidity: m.solidity, elongation: null, is_track: false, track_link: false, mask: d.mask,
+               change_sigma: changeSigma, change_label: strengthLabel(changeSigma)};
+    let evidence = [], type, forced = null;
+    if (d.key === "cloud") {
+      type = "cloud"; forced = "ignored (cloud)";
+      evidence.push(ev("bands", "100% of pixels are bright and colourless in the after image (cloud-like); excluded from totals"));
+    } else if (d.key === "track") {
+      type = "access track"; r.is_track = true; forced = "likely human-made";
+      const width = m.area / m.length; r.elongation = +(m.length / width).toFixed(1);
+      evidence.push(ev("shape", `Thin straight track (${width.toFixed(1)} px wide, ${m.length.toFixed(0)} px long, ${Math.round(m.length / width)}x longer than wide), typical of a new road`, 30));
+    } else {
+      const greenLost = cc.dExg < -0.05;
+      type = cc.water > 0.4 ? "flooding" : greenLost && cc.dL > 5 ? "clearing" : greenLost ? "vegetation loss" : cc.dL > 10 ? "excavation/construction" : "unknown";
+      evidence.push(ev("bands", type === "flooding" ? `${Math.round(cc.water * 100)}% of pixels turned water-like (dark, blue strongest)`
+        : `Green lost (ΔExG ${cc.dExg.toFixed(2)}) and surface brighter (ΔL +${cc.dL.toFixed(1)}): vegetation to bare ground`));
+      const rl = m.area >= 1000 ? rectilinearityOf(d.mask, W, H, m.bbox) : null, straight = rl != null && rl >= 0.45;
+      r.rectilinearity = rl;
+      if (m.fd == null) evidence.push(ev("shape", "Too small for a reliable boundary measure (< 1000 px)"));
+      else if (m.fd < 1.15) evidence.push(ev("shape", `Simple boundary (FD ${m.fd.toFixed(2)}), typical of machine clearing or building`, 25));
+      else if (m.fd > 1.2 && straight) evidence.push(ev("shape", `Complex outline (FD ${m.fd.toFixed(2)}) but made of straight lines: a man-made network, not natural spread`));
+      else if (m.fd > 1.2) evidence.push(ev("shape", `Irregular boundary (FD ${m.fd.toFixed(2)}), typical of natural spread`, -25));
+      else evidence.push(ev("shape", `Boundary neither simple nor irregular (FD ${m.fd.toFixed(2)})`));
+      if (straight) evidence.push(ev("shape", `Edges run in two directions at right angles (rectilinearity ${rl.toFixed(2)}): roads, plots, buildings`, 20));
+      else if (rl != null && rl <= 0.36) evidence.push(ev("shape", `Edges point every way (rectilinearity ${rl.toFixed(2)}), as natural boundaries do`, -10));
+      if (m.rect > 0.8) evidence.push(ev("shape", `Fills its box well (rectangularity ${m.rect.toFixed(2)}): straight edges`, 10));
+      if (m.solidity < 0.6 && !straight) evidence.push(ev("shape", `Jagged, fingered outline (solidity ${m.solidity.toFixed(2)})`, -10));
+      if (d.key === "clearing") { r.track_link = true; evidence.push(ev("context", "Connected to a newly cut track", 20)); }
+      if (type === "flooding") {
+        const t = touches(d.mask, sc.river);
+        if (t > 0.1) evidence.push(ev("context", `Borders water that was already there (${Math.round(t * 100)}% of its rim): typical of a river or lake changing`, -10));
+        evidence.push(ev("bands", "New water over a spread-out area", -25));
+      }
+    }
+    const score = Math.max(0, Math.min(100, 50 + evidence.reduce((a, e) => a + e.points, 0)));
+    const cause = forced || (score >= 60 ? "likely human-made" : score <= 40 ? "likely natural" : "uncertain");
+    Object.assign(r, {type, cause, human_score: forced === "ignored (cloud)" ? 50 : score,
+                      confidence: forced === "ignored (cloud)" ? 100 : Math.min(100, Math.abs(score - 50) * 2), evidence});
+    r.outside_zone_frac = null; r.outside_zone = false;
+    if (zoneMask) {
+      let out = 0; for (let i = 0; i < d.mask.length; i++) if (d.mask[i] && !zoneMask(i)) out++;
+      r.outside_zone_frac = +(out / m.area).toFixed(3);
+      if (r.outside_zone_frac > 0.2 && (cause === "likely human-made" || cause === "uncertain")) {
+        r.outside_zone = true; evidence.push(ev("context", `Outside the permitted zone: ${Math.round(r.outside_zone_frac * 100)}% of its area lies beyond the boundary`));
+      }
+    }
+    r.reasons = evidence.map(e => e.text);
+    r.lean = leanText(r.human_score, cause);
+    r.next_step = nextStep(r);
+    const weight = {"likely human-made": 1, "uncertain": 0.7, "likely natural": 0.5, "ignored (cloud)": 0}[cause];
+    r.severity = +(r.area_ha * weight * (r.outside_zone ? 1.5 : 1)).toFixed(4);
+    regions.push(r);
+  }
+  regions.sort((a, b) => (a.cause === "ignored (cloud)") - (b.cause === "ignored (cloud)") || b.severity - a.severity || b.area_px - a.area_px);
+  const labels = new Int32Array(W * H);
+  regions.forEach((r, i) => { r.id = i + 1; for (let p = 0; p < r.mask.length; p++) if (r.mask[p]) labels[p] = r.id; delete r.mask; });
+
+  const counted = regions.filter(r => r.cause !== "ignored (cloud)"), ha = rs => +rs.reduce((a, r) => a + r.area_ha, 0).toFixed(3);
+  const by = c => counted.filter(r => r.cause === c);
+  const summary = {regions: counted.length, changed_ha: ha(counted), human: by("likely human-made").length, human_ha: ha(by("likely human-made")),
+    natural: by("likely natural").length, natural_ha: ha(by("likely natural")), uncertain: by("uncertain").length, uncertain_ha: ha(by("uncertain")),
+    ignored: regions.length - counted.length, ignored_ha: ha(regions.filter(r => r.cause === "ignored (cloud)")),
+    tracks: counted.filter(r => r.is_track).length, outside_zone: counted.filter(r => r.outside_zone).length,
+    outside_zone_ha: +counted.filter(r => r.outside_zone).reduce((a, r) => a + r.area_ha * r.outside_zone_frac, 0).toFixed(3)};
+
+  const pngBytes = c => new Promise(ok => c.toBlob(b => b.arrayBuffer().then(ok), "image/png"));
+  const inputs = {
+    before: {name: "sample_before.png", sha256: await sha256Hex(await pngBytes(sc.beforeCanvas)), size: [W, H], bands: false},
+    after: {name: "sample_after.png", sha256: await sha256Hex(await pngBytes(sc.afterCanvas)), size: [W, H], bands: false},
+    source: {title: "Sample data — drawn in the browser", simulated: false, pixel_note: "sample value"}};
+  const rulesSha = await sha256Hex(pyJson({sample_rules: "fd 1.15/1.20, rect 0.80, solidity 0.60, track +30, link +20, flood -25", cuts: [40, 60]}));
+  const chain = [];
+  await addBlock(chain, "inputs", {...inputs, pixel_m: pixel, sensitivity: settings.sensitivity, min_region_px: minPx, zone, rules_sha256: rulesSha});
+  await addBlock(chain, "preprocess", {working_size: [W, H], downscale: 1, brightness_match: [[0.9615, -2.88], [0.9615, -2.88], [0.9615, -2.88]], working_pixel_m: pixel});
+  await addBlock(chain, "detect", {changed_px: regions.reduce((a, r) => a + r.area_px, 0), regions: regions.length, tracks: summary.tracks, physics: false});
+  await addBlock(chain, "attribute", {regions: regions.map(r => ({id: r.id, type: r.type, cause: r.cause, human_score: r.human_score, area_ha: r.area_ha, outside_zone: r.outside_zone}))});
+  await addBlock(chain, "summary", summary);
+  const verified = (await verifyLinks(chain)).every(s => s.status === "valid");
+  const now = new Date();
+  return {
+    __sample: {beforeURL: sc.beforeURL, afterURL: sc.afterURL, labels: {data: labels, w: W, h: H}},
+    id: "SAMPLE-" + now.toISOString().replace(/[-:]/g, "").slice(0, 15), created: now.toISOString(),
+    inputs, settings: {pixel_m: pixel, sensitivity: settings.sensitivity, min_region_px: minPx, working_size: [W, H], downscale: 1, rules_sha256: rulesSha, zone},
+    summary, regions, notes: ["Sample mode: scripted result from a browser-drawn scene; the shapes, areas and hashes are computed, the rule set is a summary of the server's."],
+    chain: {head: chain[chain.length - 1].hash, verified, links: chain}, urls: null};
+}
+
+async function sampleReportMarkdown(d) {
+  const s = d.summary, lines = [
+    "# GeoSense - change attribution report (SAMPLE MODE)", "",
+    `- Analysis ID: \`${d.id}\``, `- Generated: ${d.created}`,
+    "- Source: imagery drawn in the browser; scripted result. Not satellite data.", "",
+    "## Summary", "",
+    `- Changed regions: ${s.regions} (${s.changed_ha.toFixed(2)} ha)`,
+    `- Likely human-made: ${s.human} · likely natural: ${s.natural} · uncertain: ${s.uncertain} · cloud ignored: ${s.ignored}`,
+    ...(d.settings.zone ? [`- Outside the permitted zone: ${s.outside_zone} region(s), ${s.outside_zone_ha.toFixed(2)} ha`] : []), "",
+    "## Findings", ""];
+  for (const r of d.regions) {
+    lines.push(`### ${r.id}. ${r.type} — ${r.cause}${r.outside_zone ? " — OUTSIDE PERMITTED ZONE" : ""}`, "");
+    r.evidence.forEach(e => lines.push(`- [${TAG[e.tag]}] ${e.text}${e.points ? ` (${e.points > 0 ? "+" : ""}${e.points})` : ""}`));
+    lines.push("");
+  }
+  lines.push("## Evidence chain", "", `- Chain head: \`${d.chain.head}\``, ...d.chain.links.map(l => `- ${l.n}. ${l.step} — \`${l.hash.slice(0, 16)}…\``), "", "---", "");
+  const body = lines.join("\n");
+  return body + "\nReport SHA-256 (of all text above this line): " + await sha256Hex(body);
+}
+function sampleReportHtml(d) {
+  const s = d.summary;
+  const cards = d.regions.map(r => `<section style="border:3px solid #0b0b0b;box-shadow:5px 5px 0 #0b0b0b;padding:10px 14px;margin:12px 0;background:#fff">
+    <h3 style="margin:0 0 6px">#${r.id} ${esc(r.type)} — ${esc(r.cause)}${r.outside_zone ? " — OUTSIDE PERMITTED ZONE" : ""}</h3>
+    <ul>${r.evidence.map(e => `<li><b>[${TAG[e.tag]}]</b> ${esc(e.text)}${e.points ? ` (${e.points > 0 ? "+" : ""}${e.points})` : ""}</li>`).join("")}</ul></section>`).join("");
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>GeoSense sample report</title></head>
+  <body style="font:14px/1.5 Archivo,system-ui,sans-serif;max-width:900px;margin:24px auto;padding:0 16px;background:#fff8e7;color:#0b0b0b">
+  <p style="background:#ffd23f;border:3px solid #0b0b0b;padding:8px;font-weight:800">SAMPLE MODE — imagery drawn in the browser, scripted result. Not satellite data.</p>
+  <h1 style="text-transform:uppercase">GeoSense — change attribution report</h1>
+  <p>${s.regions} regions · ${s.changed_ha.toFixed(2)} ha · ${s.human} human-made · ${s.natural} natural · ${s.uncertain} uncertain · ${s.ignored} cloud ignored</p>
+  <img src="${d.__sample.afterURL}" alt="After image" style="width:100%;max-width:640px;border:3px solid #0b0b0b">
+  ${cards}<h2>Evidence chain</h2><p>Head <code>${d.chain.head}</code></p>
+  <p style="color:#555">Print this page (Ctrl/Cmd + P) to save it as a PDF.</p></body></html>`;
+}
+
+boot();
+</script>
+</body>
+</html>

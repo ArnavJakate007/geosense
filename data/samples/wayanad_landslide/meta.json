@@ -1,0 +1,47 @@
+{
+  "short_title": "Wayanad landslide",
+  "place": "Wayanad, Kerala, India",
+  "ps": [
+    "Landslide (natural)",
+    "Vegetation loss"
+  ],
+  "order": 3,
+  "featured": true,
+  "why": "On 30 July 2024, after extreme rain, debris flows tore down the Mundakkai and Chooralmala valleys. The same forest that machines clear in straight lines was stripped here along a winding river path: the shape of the scar is the evidence.",
+  "title": "Wayanad landslide — Wayanad, Kerala, India (2024-02-05 → 2024-12-16)",
+  "kind": "real",
+  "simulated": false,
+  "bands": true,
+  "dates": "2024-02-05 → 2024-12-16",
+  "pixel_m": 11.75,
+  "pixel_note": "Sentinel-2 L2A, resampled to 512 px over the box",
+  "bbox": [
+    76.1125,
+    11.47087,
+    76.1675,
+    11.52513
+  ],
+  "scenes": {
+    "before": {
+      "id": "S2B_43PFN_20240205_0_L2A",
+      "date": "2024-02-05",
+      "scene_cloud": 1.1,
+      "aoi_cloud_shadow_nodata": 0.0,
+      "stac": "https://earth-search.aws.element84.com/v1/collections/sentinel-2-l2a/items/S2B_43PFN_20240205_0_L2A"
+    },
+    "after": {
+      "id": "S2C_43PFN_20241216_1_L2A",
+      "date": "2024-12-16",
+      "scene_cloud": 0.0,
+      "aoi_cloud_shadow_nodata": 0.0,
+      "stac": "https://earth-search.aws.element84.com/v1/collections/sentinel-2-l2a/items/S2C_43PFN_20241216_1_L2A"
+    }
+  },
+  "story": "On 30 July 2024, after extreme rain, debris flows tore down the Mundakkai and Chooralmala valleys. The same forest that machines clear in straight lines was stripped here along a winding river path: the shape of the scar is the evidence.",
+  "look_for": [
+    "Region 1, the debris path down the valley, reads strongly natural: an irregular, fingered outline",
+    "Its change signal is far above the image's own noise, so the change is certainly real",
+    "Small slips beside it stay amber: too small for a shape verdict, and the card says what would settle it",
+    "Plots that greened up are labelled vegetation gain, not damage"
+  ]
+}

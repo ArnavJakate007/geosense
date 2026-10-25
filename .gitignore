@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.venv/
+data/cache/
+data/*.npz
+*.log
+.server.pid
+__pycache__/
+.env
+.pytest_cache/
+server.err.log
